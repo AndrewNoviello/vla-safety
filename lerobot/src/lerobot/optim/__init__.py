@@ -12,4 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .presets import make_optimizer_and_scheduler as make_optimizer_and_scheduler
+from .presets import (
+    load_optimizer_state as load_optimizer_state,
+    load_scheduler_state as load_scheduler_state,
+    make_optimizer_and_scheduler as make_optimizer_and_scheduler,
+    save_optimizer_state as save_optimizer_state,
+    save_scheduler_state as save_scheduler_state,
+)
