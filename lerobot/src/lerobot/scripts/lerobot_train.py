@@ -248,7 +248,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
     if is_main_process:
         logging.info("Creating optimizer and scheduler")
-    optimizer, lr_scheduler = make_optimizer_and_scheduler(cfg, policy)
+    optimizer, lr_scheduler, grad_clip_norm = make_optimizer_and_scheduler(cfg, policy)
 
     step = 0  # number of policy updates (forward + backward + optim)
 
@@ -338,7 +338,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             policy,
             batch,
             optimizer,
-            cfg.optimizer.grad_clip_norm,
+            grad_clip_norm,
             accelerator=accelerator,
             lr_scheduler=lr_scheduler,
         )

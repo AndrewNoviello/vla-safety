@@ -219,9 +219,6 @@ class GrootPolicy(PreTrainedPolicy):
         policy.eval()
         return policy
 
-    def get_optim_params(self) -> dict:
-        return self.parameters()
-
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict]:
         """Training forward pass.
 

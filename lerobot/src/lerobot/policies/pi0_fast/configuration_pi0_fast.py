@@ -18,8 +18,6 @@ from dataclasses import dataclass, field
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
-from lerobot.optim.optimizers import AdamWConfig
-from lerobot.optim.schedulers import CosineDecayWithWarmupSchedulerConfig
 from lerobot.policies.rtc.configuration_rtc import RTCConfig
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 
@@ -131,23 +129,6 @@ class PI0FastConfig(PreTrainedConfig):
                 shape=(self.max_action_dim,),  # Padded to max_action_dim
             )
             self.output_features[ACTION] = action_feature
-
-    def get_optimizer_preset(self) -> AdamWConfig:
-        return AdamWConfig(
-            lr=self.optimizer_lr,
-            betas=self.optimizer_betas,
-            eps=self.optimizer_eps,
-            weight_decay=self.optimizer_weight_decay,
-            grad_clip_norm=self.optimizer_grad_clip_norm,
-        )
-
-    def get_scheduler_preset(self):
-        return CosineDecayWithWarmupSchedulerConfig(
-            peak_lr=self.optimizer_lr,
-            decay_lr=self.scheduler_decay_lr,
-            num_warmup_steps=self.scheduler_warmup_steps,
-            num_decay_steps=self.scheduler_decay_steps,
-        )
 
     @property
     def observation_delta_indices(self) -> None:

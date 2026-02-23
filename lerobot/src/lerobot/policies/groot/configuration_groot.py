@@ -18,8 +18,6 @@ from dataclasses import dataclass, field
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
-from lerobot.optim.optimizers import AdamWConfig
-from lerobot.optim.schedulers import CosineDecayWithWarmupSchedulerConfig
 from lerobot.utils.constants import ACTION, OBS_STATE
 
 
@@ -167,24 +165,6 @@ class GrootConfig(PreTrainedConfig):
                     f"Action dimension {action_dim} exceeds max_action_dim {self.max_action_dim}. "
                     f"Either reduce action dimension or increase max_action_dim in config."
                 )
-
-    def get_optimizer_preset(self) -> AdamWConfig:
-        """Return optimizer configuration."""
-        return AdamWConfig(
-            lr=self.optimizer_lr,
-            betas=self.optimizer_betas,
-            eps=self.optimizer_eps,
-            weight_decay=self.optimizer_weight_decay,
-        )
-
-    def get_scheduler_preset(self) -> CosineDecayWithWarmupSchedulerConfig:
-        """Return scheduler configuration."""
-        return CosineDecayWithWarmupSchedulerConfig(
-            num_warmup_steps=int(10000 * self.warmup_ratio),  # 5% warmup by default
-            num_decay_steps=10000,  # Adjust based on training steps
-            peak_lr=self.optimizer_lr,
-            decay_lr=self.optimizer_lr * 0.1,
-        )
 
     @property
     def observation_delta_indices(self) -> None:

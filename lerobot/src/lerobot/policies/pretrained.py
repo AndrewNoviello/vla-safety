@@ -157,13 +157,6 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
         return model
 
     @abc.abstractmethod
-    def get_optim_params(self) -> dict:
-        """
-        Returns the policy-specific parameters dict to be passed on to the optimizer.
-        """
-        raise NotImplementedError
-
-    @abc.abstractmethod
     def reset(self):
         """To be called whenever the environment is reset.
 

@@ -27,8 +27,6 @@ from huggingface_hub.errors import HfHubHTTPError
 from lerobot.configs import parser
 from lerobot.configs.default import DatasetConfig, PeftConfig, WandBConfig
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.optim import OptimizerConfig
-from lerobot.optim.schedulers import LRSchedulerConfig
 from lerobot.utils.hub import HubMixin
 
 TRAIN_CONFIG_NAME = "train_config.json"
@@ -57,9 +55,6 @@ class TrainPipelineConfig(HubMixin):
     save_checkpoint: bool = True
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.
     save_freq: int = 20_000
-    use_policy_training_preset: bool = True
-    optimizer: OptimizerConfig | None = None
-    scheduler: LRSchedulerConfig | None = None
     wandb: WandBConfig = field(default_factory=WandBConfig)
     peft: PeftConfig | None = None
 
@@ -114,12 +109,6 @@ class TrainPipelineConfig(HubMixin):
 
         if isinstance(self.dataset.repo_id, list):
             raise NotImplementedError("LeRobotMultiDataset is not currently implemented.")
-
-        if not self.use_policy_training_preset and (self.optimizer is None or self.scheduler is None):
-            raise ValueError("Optimizer and Scheduler must be set when the policy presets are not used.")
-        elif self.use_policy_training_preset and not self.resume:
-            self.optimizer = self.policy.get_optimizer_preset()
-            self.scheduler = self.policy.get_scheduler_preset()
 
         if self.policy.push_to_hub and not self.policy.repo_id:
             raise ValueError(

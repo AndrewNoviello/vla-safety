@@ -12,4 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .optimizers import OptimizerConfig as OptimizerConfig
+from .presets import make_optimizer_and_scheduler as make_optimizer_and_scheduler
