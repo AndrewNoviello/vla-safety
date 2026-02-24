@@ -29,11 +29,10 @@ import argparse
 import sys
 from pathlib import Path
 
-# Allow running from workspace root when lerobot is in ./lerobot
+# Allow running from workspace root; lerobot package is at ./lerobot/
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_LEROBOT_SRC = _SCRIPT_DIR / "lerobot" / "src"
-if _LEROBOT_SRC.exists() and str(_LEROBOT_SRC) not in sys.path:
-    sys.path.insert(0, str(_LEROBOT_SRC))
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
 
 import numpy as np
 import torch
@@ -90,14 +89,14 @@ def build_observation(
     image_size: tuple[int, int] = (224, 224),
 ) -> dict[str, np.ndarray]:
     """
-    Build an observation dict with keys matching policy.config.input_features.
+    Build an observation dict with keys matching policy.input_features.
     - image_paths: one path (replicated to all camera keys) or N paths in same order as
       policy input image keys.
     - proprio: 1D array of state; will be padded/trimmed to policy's state dim.
     - task: text instruction for the policy.
     """
     observation: dict[str, np.ndarray] = {}
-    input_features = policy.config.input_features
+    input_features = policy.input_features
 
     state_key = OBS_STATE
     if state_key in input_features:
@@ -151,7 +150,7 @@ def run_inference(
     """Run one inference step: observation (numpy) -> preprocess -> policy -> postprocess -> action."""
     observation = dict(observation)
     print('observation: ' + str(observation))
-    print('input features: ' + str(policy.config.input_features))
+    print('input features: ' + str(policy.input_features))
     observation = prepare_observation_for_inference(
         observation,
         device=device,
@@ -235,16 +234,16 @@ def main():
     policy = PI0Policy.from_pretrained(args.model)
     policy.to(device)
     policy.eval()
-    policy.config.device = device
+    policy.config.device = str(device)
 
-    preprocessor, postprocessor = make_pre_post_processors(policy.config)
+    preprocessor, postprocessor = make_pre_post_processors("pi0", policy=policy)
 
     observation = build_observation(
         policy,
         image_paths=args.images,
         proprio=args.proprio,
         task=args.prompt,
-        image_size=tuple(policy.config.image_resolution),
+        image_size=tuple(policy.image_resolution),
     )
     print(f"Observation keys: {list(observation.keys())}")
 

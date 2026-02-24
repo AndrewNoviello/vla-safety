@@ -27,7 +27,6 @@ discord = "https://discord.gg/s3KuuzsPFb"
 name = "lerobot"
 version = "0.4.4"
 description = "🤗 LeRobot: State-of-the-art Machine Learning for Real-World Robotics in Pytorch"
-dynamic = ["readme"]
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 authors = [
@@ -212,12 +211,13 @@ lerobot-setup-can="lerobot.scripts.lerobot_setup_can:main"
 
 # ---------------- Tool Configurations ----------------
 [tool.setuptools.packages.find]
-where = ["src"]
+where = [".."]
+include = ["lerobot*"]
 
 [tool.ruff]
 target-version = "py310"
 line-length = 110
-exclude = ["tests/artifacts/**/*.safetensors", "*_pb2.py", "*_pb2_grpc.py"]
+exclude = ["*_pb2.py", "*_pb2_grpc.py"]
 
 [tool.ruff.lint]
 # E, W: pycodestyle errors and warnings
@@ -246,7 +246,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403"]
-"src/lerobot/policies/wall_x/**" = ["N801", "N812", "SIM102", "SIM108", "SIM210", "SIM211", "B006", "B007", "SIM118"] # Supprese these as they are coming from original Qwen2_5_vl code TODO(pepijn): refactor original
+"policies/wall_x/**" = ["N801", "N812", "SIM102", "SIM108", "SIM210", "SIM211", "B006", "B007", "SIM118"] # Supprese these as they are coming from original Qwen2_5_vl code TODO(pepijn): refactor original
 
 [tool.ruff.lint.isort]
 combine-as-imports = true
@@ -266,7 +266,7 @@ docstring-code-format = true
 exclude_dirs = [
     "tests",
     "benchmarks",
-    "src/lerobot/datasets/push_dataset_to_hub",
+    "datasets/push_dataset_to_hub",
 ]
 skips = ["B101", "B311", "B404", "B603", "B615"]
 
@@ -286,22 +286,6 @@ default.extend-ignore-identifiers-re = [
     "ROBOTIS",
     "OT_VALUE"
 ]
-
-# TODO: Uncomment when ready to use
-# [tool.interrogate]
-# ignore-init-module = true
-# ignore-init-method = true
-# ignore-nested-functions = false
-# ignore-magic = false
-# ignore-semiprivate = false
-# ignore-private = false
-# ignore-property-decorators = false
-# ignore-module = false
-# ignore-setters = false
-# fail-under = 80
-# output-format = "term-missing"
-# color = true
-# paths = ["src/lerobot"]
 
 # TODO: Enable mypy gradually module by module across multiple PRs
 # Uncomment [tool.mypy] first, then uncomment individual module overrides as they get proper type annotations

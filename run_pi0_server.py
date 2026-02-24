@@ -32,9 +32,8 @@ import sys
 from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_LEROBOT_SRC = _SCRIPT_DIR / "lerobot" / "src"
-if _LEROBOT_SRC.exists() and str(_LEROBOT_SRC) not in sys.path:
-    sys.path.insert(0, str(_LEROBOT_SRC))
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
 
 import numpy as np
 import torch
