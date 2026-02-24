@@ -13,15 +13,16 @@
 # limitations under the License.
 import abc
 import builtins
+import dataclasses
 import json
 import os
-import tempfile
+import types
 from dataclasses import dataclass, field
+from enum import Enum
 from logging import getLogger
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, ClassVar, TypeVar, Union, get_args, get_origin, get_type_hints
 
-import draccus
 from huggingface_hub import hf_hub_download
 from huggingface_hub.constants import CONFIG_NAME
 from huggingface_hub.errors import HfHubHTTPError
@@ -35,8 +36,78 @@ T = TypeVar("T", bound="PreTrainedConfig")
 logger = getLogger(__name__)
 
 
+def _is_optional(tp) -> tuple[bool, type | None]:
+    """Return (True, inner_type) if *tp* is ``X | None`` or ``Optional[X]``."""
+    origin = get_origin(tp)
+    if origin is Union or origin is types.UnionType:
+        args = [a for a in get_args(tp) if a is not type(None)]
+        if len(args) == 1:
+            return True, args[0]
+    return False, None
+
+
+def _serialize(val: Any) -> Any:
+    """Recursively convert a value to a JSON-compatible representation."""
+    if val is None:
+        return None
+    if isinstance(val, Enum):
+        return val.value
+    if isinstance(val, Path):
+        return str(val)
+    if dataclasses.is_dataclass(val) and not isinstance(val, type):
+        return {f.name: _serialize(getattr(val, f.name)) for f in dataclasses.fields(val)}
+    if isinstance(val, dict):
+        return {k: _serialize(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [_serialize(v) for v in val]
+    return val
+
+
+def _deserialize(val: Any, target_type: Any) -> Any:
+    """Recursively convert a JSON value to the expected Python type."""
+    if val is None:
+        return None
+
+    is_opt, inner = _is_optional(target_type)
+    if is_opt:
+        return _deserialize(val, inner)
+
+    if isinstance(target_type, type) and issubclass(target_type, Enum):
+        return target_type(val)
+
+    if isinstance(target_type, type) and issubclass(target_type, Path):
+        return Path(val)
+
+    if dataclasses.is_dataclass(target_type):
+        hints = get_type_hints(target_type)
+        kwargs = {}
+        for f in dataclasses.fields(target_type):
+            if f.name in val:
+                kwargs[f.name] = _deserialize(val[f.name], hints[f.name])
+        return target_type(**kwargs)
+
+    origin = get_origin(target_type)
+    args = get_args(target_type)
+
+    if origin is dict and args:
+        _, val_type = args
+        return {k: _deserialize(v, val_type) for k, v in val.items()}
+
+    if origin is tuple and args:
+        if len(args) == 2 and args[1] is Ellipsis:
+            return tuple(_deserialize(v, args[0]) for v in val)
+        return tuple(_deserialize(v, t) for v, t in zip(val, args))
+
+    if isinstance(val, list) and origin is not list:
+        # Best-effort: convert JSON arrays back to tuples when the hint is bare `tuple`
+        if target_type is tuple:
+            return tuple(val)
+
+    return val
+
+
 @dataclass
-class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: ignore[misc,name-defined] #TODO: draccus issue
+class PreTrainedConfig(HubMixin, abc.ABC):
     """
     Base configuration class for policy models.
 
@@ -51,31 +122,24 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: igno
             a corresponding NormalizationMode (e.g., NormalizationMode.MIN_MAX)
     """
 
+    _REGISTRY: ClassVar[dict[str, type["PreTrainedConfig"]]] = {}
+
     n_obs_steps: int = 1
 
-    # `input_features` can be set to None/null in order to infer those values from the dataset.
     input_features: dict[str, PolicyFeature] | None = field(default_factory=dict)
     output_features: dict[str, PolicyFeature] | None = field(default_factory=dict)
 
-    device: str | None = None  # e.g. "cuda", "cuda:0", "cpu", or "mps"
-    # `use_amp` determines whether to use Automatic Mixed Precision (AMP) for training and evaluation. With AMP,
-    # automatic gradient scaling is used.
+    device: str | None = None
     use_amp: bool = False
 
-    # Whether the policy employed PEFT for training.
     use_peft: bool = False
 
-    push_to_hub: bool = True  # type: ignore[assignment] # TODO: use a different name to avoid override
+    push_to_hub: bool = True  # type: ignore[assignment]
     repo_id: str | None = None
 
-    # Upload on private repository on the Hugging Face hub.
     private: bool | None = None
-    # Add tags to your policy on the hub.
     tags: list[str] | None = None
-    # Add tags to your policy on the hub.
     license: str | None = None
-    # Either the repo ID of a model hosted on the Hub or a path to a directory containing weights
-    # saved using `Policy.save_pretrained`. If not provided, the policy is initialized from scratch.
     pretrained_path: Path | None = None
 
     def __post_init__(self) -> None:
@@ -84,12 +148,40 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: igno
             logger.warning(f"Device '{self.device}' is not available. Switching to '{auto_device}'.")
             self.device = auto_device.type
 
-        # Automatically deactivate AMP if necessary
         if self.use_amp and not is_amp_available(self.device):
             logger.warning(
                 f"Automatic Mixed Precision (amp) is not available on device '{self.device}'. Deactivating AMP."
             )
             self.use_amp = False
+
+    # ------------------------------------------------------------------
+    # Registry helpers (replaces draccus.ChoiceRegistry)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def register_subclass(cls, name: str):
+        """Decorator that registers a config subclass under *name*."""
+        def decorator(subclass):
+            cls._REGISTRY[name] = subclass
+            return subclass
+        return decorator
+
+    @classmethod
+    def get_choice_class(cls, name: str) -> type["PreTrainedConfig"]:
+        if name not in cls._REGISTRY:
+            raise ValueError(f"Unknown policy type '{name}'. Available: {list(cls._REGISTRY)}")
+        return cls._REGISTRY[name]
+
+    @classmethod
+    def get_known_choices(cls) -> list[str]:
+        return list(cls._REGISTRY)
+
+    @classmethod
+    def get_choice_name(cls, subclass: type) -> str | None:
+        for name, registered_cls in cls._REGISTRY.items():
+            if registered_cls is subclass:
+                return name
+        return None
 
     @property
     def type(self) -> str:
@@ -98,24 +190,32 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: igno
             raise TypeError(f"Expected string from get_choice_name, got {type(choice_name)}")
         return choice_name
 
+    # ------------------------------------------------------------------
+    # Abstract interface
+    # ------------------------------------------------------------------
+
     @property
     @abc.abstractmethod
-    def observation_delta_indices(self) -> list | None:  # type: ignore[type-arg] #TODO: No implementation
+    def observation_delta_indices(self) -> list | None:
         raise NotImplementedError
 
     @property
     @abc.abstractmethod
-    def action_delta_indices(self) -> list | None:  # type: ignore[type-arg]    #TODO: No implementation
+    def action_delta_indices(self) -> list | None:
         raise NotImplementedError
 
     @property
     @abc.abstractmethod
-    def reward_delta_indices(self) -> list | None:  # type: ignore[type-arg]    #TODO: No implementation
+    def reward_delta_indices(self) -> list | None:
         raise NotImplementedError
 
     @abc.abstractmethod
     def validate_features(self) -> None:
         raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Convenience properties
+    # ------------------------------------------------------------------
 
     @property
     def robot_state_feature(self) -> PolicyFeature | None:
@@ -150,9 +250,19 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: igno
                 return ft
         return None
 
+    # ------------------------------------------------------------------
+    # Serialization / deserialization
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict[str, Any]:
+        d = _serialize(self)
+        d["type"] = self.type
+        return d
+
     def _save_pretrained(self, save_directory: Path) -> None:
-        with open(save_directory / CONFIG_NAME, "w") as f, draccus.config_type("json"):
-            draccus.dump(self, f, indent=4)
+        save_directory.mkdir(parents=True, exist_ok=True)
+        with open(save_directory / CONFIG_NAME, "w") as f:
+            json.dump(self.to_dict(), f, indent=4)
 
     @classmethod
     def from_pretrained(
@@ -193,24 +303,38 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: igno
                     f"{CONFIG_NAME} not found on the HuggingFace Hub in {model_id}"
                 ) from e
 
-        # HACK: Parse the original config to get the config subclass, so that we can
-        # apply cli overrides.
-        # This is very ugly, ideally we'd like to be able to do that natively with draccus
-        # something like --policy.path (in addition to --policy.type)
-        with draccus.config_type("json"):
-            orig_config = draccus.parse(cls, config_file, args=[])
-
         if config_file is None:
             raise FileNotFoundError(f"{CONFIG_NAME} not found in {model_id}")
 
         with open(config_file) as f:
-            config = json.load(f)
+            data = json.load(f)
 
-        config.pop("type")
-        with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json") as f:
-            json.dump(config, f)
-            config_file = f.name
+        type_name = data.pop("type", None)
 
-        cli_overrides = policy_kwargs.pop("cli_overrides", [])
-        with draccus.config_type("json"):
-            return draccus.parse(orig_config.__class__, config_file, args=cli_overrides)
+        if type_name is not None and type_name in cls._REGISTRY:
+            target_cls = cls._REGISTRY[type_name]
+        elif cls is not PreTrainedConfig and cls not in (PreTrainedConfig,):
+            target_cls = cls
+        else:
+            raise ValueError(
+                f"Cannot determine config subclass: 'type' field is '{type_name}' "
+                f"and no matching registered subclass was found. Available: {list(cls._REGISTRY)}"
+            )
+
+        return _config_from_dict(target_cls, data)
+
+
+def _config_from_dict(config_cls: type[T], data: dict[str, Any]) -> T:
+    """Instantiate a config dataclass from a plain dict, converting types as needed."""
+    hints = get_type_hints(config_cls)
+    known_fields = {f.name for f in dataclasses.fields(config_cls)}
+    kwargs: dict[str, Any] = {}
+    for key, val in data.items():
+        if key not in known_fields:
+            continue
+        target_type = hints.get(key)
+        if target_type is not None:
+            kwargs[key] = _deserialize(val, target_type)
+        else:
+            kwargs[key] = val
+    return config_cls(**kwargs)

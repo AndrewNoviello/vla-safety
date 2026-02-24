@@ -18,52 +18,53 @@ import os
 import re
 from glob import glob
 from pathlib import Path
+from typing import Any
 
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 from termcolor import colored
 
-from lerobot.configs.train import TrainPipelineConfig
 from lerobot.utils.constants import PRETRAINED_MODEL_DIR
 
 
-def cfg_to_group(
-    cfg: TrainPipelineConfig, return_list: bool = False, truncate_tags: bool = False, max_tag_length: int = 64
-) -> list[str] | str:
-    """Return a group name for logging. Optionally returns group name as list."""
+def make_wandb_tags(
+    policy_type: str,
+    seed: int | None = None,
+    dataset_repo_id: str | None = None,
+    *,
+    truncate: bool = False,
+    max_tag_length: int = 64,
+) -> list[str]:
+    """Build a list of W&B tags from training parameters."""
 
     def _maybe_truncate(tag: str) -> str:
-        """Truncate tag to max_tag_length characters if required.
-
-        wandb rejects tags longer than 64 characters.
-        See: https://github.com/wandb/wandb/blob/main/wandb/sdk/wandb_settings.py
-        """
-        if len(tag) <= max_tag_length:
+        if not truncate or len(tag) <= max_tag_length:
             return tag
         return tag[:max_tag_length]
 
-    lst = [
-        f"policy:{cfg.policy.type}",
-        f"seed:{cfg.seed}",
-    ]
-    if cfg.dataset is not None:
-        lst.append(f"dataset:{cfg.dataset.repo_id}")
-    if cfg.env is not None:
-        lst.append(f"env:{cfg.env.type}")
-    if truncate_tags:
-        lst = [_maybe_truncate(tag) for tag in lst]
-    return lst if return_list else "-".join(lst)
+    tags = [_maybe_truncate(f"policy:{policy_type}")]
+    if seed is not None:
+        tags.append(_maybe_truncate(f"seed:{seed}"))
+    if dataset_repo_id is not None:
+        tags.append(_maybe_truncate(f"dataset:{dataset_repo_id}"))
+    return tags
+
+
+def make_wandb_group(
+    policy_type: str,
+    seed: int | None = None,
+    dataset_repo_id: str | None = None,
+) -> str:
+    return "-".join(make_wandb_tags(policy_type, seed, dataset_repo_id))
 
 
 def get_wandb_run_id_from_filesystem(log_dir: Path) -> str:
-    # Get the WandB run ID.
     paths = glob(str(log_dir / "wandb/latest-run/run-*"))
     if len(paths) != 1:
         raise RuntimeError("Couldn't get the previous WandB run ID for run resumption.")
     match = re.search(r"run-([^\.]+).wandb", paths[0].split("/")[-1])
     if match is None:
         raise RuntimeError("Couldn't get the previous WandB run ID for run resumption.")
-    wandb_run_id = match.groups(0)[0]
-    return wandb_run_id
+    return match.groups(0)[0]
 
 
 def get_safe_wandb_artifact_name(name: str):
@@ -72,47 +73,54 @@ def get_safe_wandb_artifact_name(name: str):
 
 
 class WandBLogger:
-    """A helper class to log object using wandb."""
+    """A helper class to log objects using wandb."""
 
-    def __init__(self, cfg: TrainPipelineConfig):
-        self.cfg = cfg.wandb
-        self.log_dir = cfg.output_dir
-        self.job_name = cfg.job_name
-        self.env_fps = cfg.env.fps if cfg.env else None
-        self._group = cfg_to_group(cfg)
+    def __init__(
+        self,
+        *,
+        project: str = "lerobot",
+        entity: str | None = None,
+        notes: str | None = None,
+        run_id: str | None = None,
+        mode: str | None = None,
+        disable_artifact: bool = False,
+        log_dir: Path,
+        job_name: str,
+        resume: bool = False,
+        policy_type: str,
+        seed: int | None = None,
+        dataset_repo_id: str | None = None,
+        config_dict: dict[str, Any] | None = None,
+    ):
+        self.disable_artifact = disable_artifact
+        self.log_dir = log_dir
+        self.job_name = job_name
+        self._group = make_wandb_group(policy_type, seed, dataset_repo_id)
 
-        # Set up WandB.
         os.environ["WANDB_SILENT"] = "True"
         import wandb
 
         wandb_run_id = (
-            cfg.wandb.run_id
-            if cfg.wandb.run_id
+            run_id
+            if run_id
             else get_wandb_run_id_from_filesystem(self.log_dir)
-            if cfg.resume
+            if resume
             else None
         )
         wandb.init(
             id=wandb_run_id,
-            project=self.cfg.project,
-            entity=self.cfg.entity,
+            project=project,
+            entity=entity,
             name=self.job_name,
-            notes=self.cfg.notes,
-            tags=cfg_to_group(cfg, return_list=True, truncate_tags=True),
+            notes=notes,
+            tags=make_wandb_tags(policy_type, seed, dataset_repo_id, truncate=True),
             dir=self.log_dir,
-            config=cfg.to_dict(),
-            # TODO(rcadene): try set to True
+            config=config_dict,
             save_code=False,
-            # TODO(rcadene): split train and eval, and run async eval with job_type="eval"
             job_type="train_eval",
-            resume="must" if cfg.resume else None,
-            mode=self.cfg.mode if self.cfg.mode in ["online", "offline", "disabled"] else "online",
+            resume="must" if resume else None,
+            mode=mode if mode in ["online", "offline", "disabled"] else "online",
         )
-        run_id = wandb.run.id
-        # NOTE: We will override the cfg.wandb.run_id with the wandb run id.
-        # This is because we want to be able to resume the run from the wandb run id.
-        cfg.wandb.run_id = run_id
-        # Handle custom step key for rl asynchronous training.
         self._wandb_custom_step_key: set[str] | None = None
         logging.info(colored("Logs will be synced with wandb.", "blue", attrs=["bold"]))
         logging.info(f"Track this run --> {colored(wandb.run.get_url(), 'yellow', attrs=['bold'])}")
@@ -120,7 +128,7 @@ class WandBLogger:
 
     def log_policy(self, checkpoint_dir: Path):
         """Checkpoints the policy to wandb."""
-        if self.cfg.disable_artifact:
+        if self.disable_artifact:
             return
 
         step_id = checkpoint_dir.name
@@ -129,22 +137,18 @@ class WandBLogger:
         artifact = self._wandb.Artifact(artifact_name, type="model")
         pretrained_model_dir = checkpoint_dir / PRETRAINED_MODEL_DIR
 
-        # Check if this is a PEFT model (has adapter files instead of model.safetensors)
         adapter_model_file = pretrained_model_dir / "adapter_model.safetensors"
         standard_model_file = pretrained_model_dir / SAFETENSORS_SINGLE_FILE
 
         if adapter_model_file.exists():
-            # PEFT model: add adapter files and configs
             artifact.add_file(adapter_model_file)
             adapter_config_file = pretrained_model_dir / "adapter_config.json"
             if adapter_config_file.exists():
                 artifact.add_file(adapter_config_file)
-            # Also add the policy config which is needed for loading
             config_file = pretrained_model_dir / "config.json"
             if config_file.exists():
                 artifact.add_file(config_file)
         elif standard_model_file.exists():
-            # Standard model: add the single safetensors file
             artifact.add_file(standard_model_file)
         else:
             logging.warning(
@@ -163,11 +167,6 @@ class WandBLogger:
         if step is None and custom_step_key is None:
             raise ValueError("Either step or custom_step_key must be provided.")
 
-        # NOTE: This is not simple. Wandb step must always monotonically increase and it
-        # increases with each wandb.log call, but in the case of asynchronous RL for example,
-        # multiple time steps is possible. For example, the interaction step with the environment,
-        # the training step, the evaluation step, etc. So we need to define a custom step key
-        # to log the correct step for each metric.
         if custom_step_key is not None:
             if self._wandb_custom_step_key is None:
                 self._wandb_custom_step_key = set()
@@ -183,7 +182,6 @@ class WandBLogger:
                 )
                 continue
 
-            # Do not log the custom step key itself.
             if self._wandb_custom_step_key is not None and k in self._wandb_custom_step_key:
                 continue
 
@@ -199,5 +197,5 @@ class WandBLogger:
         if mode not in {"train", "eval"}:
             raise ValueError(mode)
 
-        wandb_video = self._wandb.Video(video_path, fps=self.env_fps, format="mp4")
+        wandb_video = self._wandb.Video(video_path, format="mp4")
         self._wandb.log({f"{mode}/video": wandb_video}, step=step)

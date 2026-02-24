@@ -59,7 +59,6 @@ DEFAULT_SUBTASKS_PATH = "meta/subtasks.parquet"
 DEFAULT_EPISODES_PATH = EPISODES_DIR + "/" + CHUNK_FILE_PATTERN + ".parquet"
 DEFAULT_DATA_PATH = DATA_DIR + "/" + CHUNK_FILE_PATTERN + ".parquet"
 DEFAULT_VIDEO_PATH = VIDEO_DIR + "/{video_key}/" + CHUNK_FILE_PATTERN + ".mp4"
-DEFAULT_IMAGE_PATH = "images/{image_key}/episode-{episode_index:06d}/frame-{frame_index:06d}.png"
 
 DEFAULT_FEATURES = {
     "timestamp": {"dtype": "float32", "shape": (1,), "names": None},
@@ -295,23 +294,6 @@ def load_episodes(local_dir: Path) -> datasets.Dataset:
     episodes = load_nested_dataset(local_dir / EPISODES_DIR)
     episodes = episodes.select_columns([key for key in episodes.features if not key.startswith("stats/")])
     return episodes
-
-
-# ---------------------------------------------------------------------------
-# Image helpers
-# ---------------------------------------------------------------------------
-
-
-def load_image_as_numpy(
-    fpath: str | Path, dtype: np.dtype = np.float32, channel_first: bool = True
-) -> np.ndarray:
-    img = PILImage.open(fpath).convert("RGB")
-    img_array = np.array(img, dtype=dtype)
-    if channel_first:
-        img_array = np.transpose(img_array, (2, 0, 1))
-    if np.issubdtype(dtype, np.floating):
-        img_array /= 255.0
-    return img_array
 
 
 # ---------------------------------------------------------------------------

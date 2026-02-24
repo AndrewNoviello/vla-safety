@@ -13,11 +13,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import dataclasses
+"""
+Training script with hardcoded configuration.
+
+Edit the values in the "Configuration" section below, then run:
+
+    python -m lerobot.lerobot_train
+
+Or with accelerate for multi-GPU:
+
+    accelerate launch -m lerobot.lerobot_train
+"""
+import datetime as dt
 import logging
 import time
 from contextlib import nullcontext
-from pprint import pformat
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -25,16 +36,14 @@ from accelerate import Accelerator
 from termcolor import colored
 from torch.optim import Optimizer
 
-from lerobot.configs import parser
-from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.lerobot_dataset import load_dataset
 from lerobot.datasets.sampler import EpisodeAwareSampler
-from lerobot.datasets.transforms import ImageTransforms
+from lerobot.datasets.transforms import ImageTransforms, ImageTransformsConfig
 from lerobot.datasets.utils import cycle, resolve_delta_timestamps
 from lerobot.optim import make_optimizer_and_scheduler
 from lerobot.policies.factory import make_policy
+from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.pretrained import PreTrainedPolicy
-from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.processing import normalize, to_device
 from lerobot.utils.random_utils import set_seed
@@ -50,6 +59,42 @@ from lerobot.utils.utils import (
     init_logging,
 )
 from lerobot.utils.wandb_utils import WandBLogger
+
+# =====================================================================
+# Configuration -- edit these values for your experiment
+# =====================================================================
+
+DATASET_REPO_ID = "lerobot/pusht"
+DATASET_ROOT = None
+DATASET_EPISODES = None
+
+POLICY_CONFIG = PI0Config(
+    pretrained_path=None,
+)
+
+STEPS = 100_000
+BATCH_SIZE = 8
+NUM_WORKERS = 4
+SEED = 1000
+LOG_FREQ = 200
+SAVE_CHECKPOINT = True
+SAVE_FREQ = 20_000
+TOLERANCE_S = 1e-4
+
+IMAGE_TRANSFORMS_ENABLED = False
+
+PEFT_KWARGS = None  # set to e.g. {"method_type": "LORA", "r": 16} to enable PEFT
+
+WANDB_ENABLE = False
+WANDB_PROJECT = "lerobot"
+WANDB_ENTITY = None
+WANDB_NOTES = None
+
+OUTPUT_DIR = None  # auto-generated if None
+
+# =====================================================================
+# Training logic
+# =====================================================================
 
 
 def update_policy(
@@ -95,64 +140,72 @@ def update_policy(
     return train_metrics, output_dict
 
 
-@parser.wrap()
-def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
-    cfg.validate()
+def train():
+    policy_cfg = POLICY_CONFIG
+    output_dir = OUTPUT_DIR
+    if output_dir is None:
+        now = dt.datetime.now()
+        output_dir = Path("outputs/train") / f"{now:%Y-%m-%d}/{now:%H-%M-%S}_{policy_cfg.type}"
+    else:
+        output_dir = Path(output_dir)
 
-    if accelerator is None:
-        from accelerate.utils import DistributedDataParallelKwargs
+    from accelerate.utils import DistributedDataParallelKwargs
 
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-        force_cpu = cfg.policy.device == "cpu"
-        accelerator = Accelerator(
-            step_scheduler_with_optimizer=False,
-            kwargs_handlers=[ddp_kwargs],
-            cpu=force_cpu,
-        )
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    force_cpu = policy_cfg.device == "cpu"
+    accelerator = Accelerator(
+        step_scheduler_with_optimizer=False,
+        kwargs_handlers=[ddp_kwargs],
+        cpu=force_cpu,
+    )
 
     init_logging(accelerator=accelerator)
     is_main_process = accelerator.is_main_process
 
-    if is_main_process:
-        logging.info(pformat(cfg.to_dict()))
-
-    if cfg.wandb.enable and cfg.wandb.project and is_main_process:
-        wandb_logger = WandBLogger(cfg)
+    if WANDB_ENABLE and WANDB_PROJECT and is_main_process:
+        wandb_logger = WandBLogger(
+            project=WANDB_PROJECT,
+            entity=WANDB_ENTITY,
+            notes=WANDB_NOTES,
+            log_dir=output_dir,
+            job_name=policy_cfg.type,
+            policy_type=policy_cfg.type,
+            seed=SEED,
+            dataset_repo_id=DATASET_REPO_ID,
+        )
     else:
         wandb_logger = None
         if is_main_process:
             logging.info(colored("Logs will be saved locally.", "yellow", attrs=["bold"]))
 
-    if cfg.seed is not None:
-        set_seed(cfg.seed, accelerator=accelerator)
+    if SEED is not None:
+        set_seed(SEED, accelerator=accelerator)
 
     device = accelerator.device
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
 
     # --- Dataset ---
-    image_transforms = (
-        ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
-    )
+    image_transforms_cfg = ImageTransformsConfig(enable=IMAGE_TRANSFORMS_ENABLED)
+    image_transforms = ImageTransforms(image_transforms_cfg) if image_transforms_cfg.enable else None
 
     def _create_dataset():
-        """Load dataset, resolving delta_timestamps from the policy config."""
         ds = load_dataset(
-            cfg.dataset.repo_id,
-            episodes=cfg.dataset.episodes,
+            DATASET_REPO_ID,
+            episodes=DATASET_EPISODES,
             image_transforms=image_transforms,
-            root=cfg.dataset.root,
-            tolerance_s=cfg.tolerance_s,
+            root=DATASET_ROOT,
+            tolerance_s=TOLERANCE_S,
         )
-        delta_timestamps = resolve_delta_timestamps(cfg.policy, ds)
+        delta_timestamps = resolve_delta_timestamps(policy_cfg, ds)
         if delta_timestamps is not None:
             ds = load_dataset(
-                cfg.dataset.repo_id,
-                episodes=cfg.dataset.episodes,
+                DATASET_REPO_ID,
+                episodes=DATASET_EPISODES,
                 delta_timestamps=delta_timestamps,
                 image_transforms=image_transforms,
-                root=cfg.dataset.root,
-                tolerance_s=cfg.tolerance_s,
+                root=DATASET_ROOT,
+                tolerance_s=TOLERANCE_S,
             )
         return ds
 
@@ -169,48 +222,47 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if is_main_process:
         logging.info("Creating policy")
     policy = make_policy(
-        cfg=cfg.policy,
+        cfg=policy_cfg,
         ds_meta=dataset.meta,
     )
 
-    if cfg.peft is not None:
+    is_peft = PEFT_KWARGS is not None
+    if is_peft:
         logging.info("Using PEFT! Wrapping model.")
-        peft_cli_overrides = dataclasses.asdict(cfg.peft)
-        policy = policy.wrap_with_peft(peft_cli_overrides=peft_cli_overrides)
+        policy = policy.wrap_with_peft(peft_cli_overrides=PEFT_KWARGS)
 
     accelerator.wait_for_everyone()
 
     # --- Optimizer ---
     if is_main_process:
         logging.info("Creating optimizer and scheduler")
-    optimizer, lr_scheduler, grad_clip_norm = make_optimizer_and_scheduler(cfg, policy)
+    optimizer, lr_scheduler, grad_clip_norm = make_optimizer_and_scheduler(
+        policy_cfg.type, policy.parameters(), STEPS
+    )
 
     step = 0
-    if cfg.resume:
-        step, optimizer, lr_scheduler = load_training_state(cfg.checkpoint_path, optimizer, lr_scheduler)
-
     num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     num_total_params = sum(p.numel() for p in policy.parameters())
 
     if is_main_process:
-        logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
-        logging.info(f"{cfg.steps=} ({format_big_number(cfg.steps)})")
+        logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {output_dir}")
+        logging.info(f"steps={STEPS} ({format_big_number(STEPS)})")
         logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
         logging.info(f"{dataset.num_episodes=}")
         num_processes = accelerator.num_processes
-        effective_bs = cfg.batch_size * num_processes
-        logging.info(f"Effective batch size: {cfg.batch_size} x {num_processes} = {effective_bs}")
+        effective_bs = BATCH_SIZE * num_processes
+        logging.info(f"Effective batch size: {BATCH_SIZE} x {num_processes} = {effective_bs}")
         logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
         logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
     # --- Dataloader ---
-    if hasattr(cfg.policy, "drop_n_last_frames"):
+    if hasattr(policy_cfg, "drop_n_last_frames"):
         shuffle = False
         sampler = EpisodeAwareSampler(
             dataset.meta.episodes["dataset_from_index"],
             dataset.meta.episodes["dataset_to_index"],
             episode_indices_to_use=dataset.episodes,
-            drop_n_last_frames=cfg.policy.drop_n_last_frames,
+            drop_n_last_frames=policy_cfg.drop_n_last_frames,
             shuffle=True,
         )
     else:
@@ -219,13 +271,13 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        num_workers=cfg.num_workers,
-        batch_size=cfg.batch_size,
+        num_workers=NUM_WORKERS,
+        batch_size=BATCH_SIZE,
         shuffle=shuffle,
         sampler=sampler,
         pin_memory=device.type == "cuda",
         drop_last=False,
-        prefetch_factor=2 if cfg.num_workers > 0 else None,
+        prefetch_factor=2 if NUM_WORKERS > 0 else None,
     )
 
     accelerator.wait_for_everyone()
@@ -244,7 +296,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         "dataloading_s": AverageMeter("data_s", ":.3f"),
     }
 
-    effective_batch_size = cfg.batch_size * accelerator.num_processes
+    effective_batch_size = BATCH_SIZE * accelerator.num_processes
     train_tracker = MetricsTracker(
         effective_batch_size,
         dataset.num_frames,
@@ -259,11 +311,10 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             f"Start offline training on a fixed dataset, with effective batch size: {effective_batch_size}"
         )
 
-    # Prepare normalization args from policy config
     all_features = {**policy.config.input_features, **policy.config.output_features}
     norm_map = policy.config.normalization_mapping
 
-    for _ in range(step, cfg.steps):
+    for _ in range(step, STEPS):
         start_time = time.perf_counter()
         batch = next(dl_iter)
         batch = normalize(batch, dataset.stats, all_features, norm_map)
@@ -282,8 +333,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
         step += 1
         train_tracker.step()
-        is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0 and is_main_process
-        is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
+        is_log_step = LOG_FREQ > 0 and step % LOG_FREQ == 0 and is_main_process
+        is_saving_step = step % SAVE_FREQ == 0 or step == STEPS
 
         if is_log_step:
             logging.info(train_tracker)
@@ -294,17 +345,17 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 wandb_logger.log_dict(wandb_log_dict, step)
             train_tracker.reset_averages()
 
-        if cfg.save_checkpoint and is_saving_step:
+        if SAVE_CHECKPOINT and is_saving_step:
             if is_main_process:
                 logging.info(f"Checkpoint policy after step {step}")
-                checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
+                checkpoint_dir = get_step_checkpoint_dir(output_dir, STEPS, step)
                 save_checkpoint(
                     checkpoint_dir=checkpoint_dir,
                     step=step,
-                    cfg=cfg,
                     policy=accelerator.unwrap_model(policy),
                     optimizer=optimizer,
                     scheduler=lr_scheduler,
+                    is_peft=is_peft,
                 )
                 update_last_checkpoint(checkpoint_dir)
                 if wandb_logger:
@@ -315,19 +366,18 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if is_main_process:
         logging.info("End of training")
 
-        if cfg.policy.push_to_hub:
+        if policy_cfg.push_to_hub:
             unwrapped_policy = accelerator.unwrap_model(policy)
-            if cfg.policy.use_peft:
-                unwrapped_policy.push_model_to_hub(cfg, peft_model=unwrapped_policy)
+            if policy_cfg.use_peft:
+                unwrapped_policy.push_model_to_hub(DATASET_REPO_ID, peft_model=unwrapped_policy)
             else:
-                unwrapped_policy.push_model_to_hub(cfg)
+                unwrapped_policy.push_model_to_hub(DATASET_REPO_ID)
 
     accelerator.wait_for_everyone()
     accelerator.end_training()
 
 
 def main():
-    register_third_party_plugins()
     train()
 
 

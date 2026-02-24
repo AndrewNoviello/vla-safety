@@ -18,7 +18,7 @@ import importlib.metadata
 import logging
 from typing import Any
 
-from draccus.choice_types import ChoiceRegistry
+import dataclasses
 
 
 def is_package_available(
@@ -76,18 +76,18 @@ _reachy2_sdk_available = is_package_available("reachy2_sdk")
 _can_available = is_package_available("python-can", "can")
 
 
-def make_device_from_device_class(config: ChoiceRegistry) -> Any:
+def make_device_from_device_class(config: Any) -> Any:
     """
-    Dynamically instantiates an object from its `ChoiceRegistry` configuration.
+    Dynamically instantiates an object from a dataclass configuration.
 
-    This factory uses the module path and class name from the `config` object's
+    This factory uses the module path and class name from the *config* object's
     type to locate and instantiate the corresponding device class (not the config).
     It derives the device class name by removing a trailing 'Config' from the config
     class name and tries a few candidate modules where the device implementation is
     commonly located.
     """
-    if not isinstance(config, ChoiceRegistry):
-        raise ValueError(f"Config should be an instance of `ChoiceRegistry`, got {type(config)}")
+    if not dataclasses.is_dataclass(config):
+        raise ValueError(f"Config should be a dataclass instance, got {type(config)}")
 
     config_cls = config.__class__
     module_path = config_cls.__module__  # typical: lerobot_teleop_mydevice.config_mydevice

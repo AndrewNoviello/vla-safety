@@ -15,8 +15,6 @@
 # limitations under the License.
 import numpy as np
 
-from lerobot.datasets.utils import load_image_as_numpy
-
 DEFAULT_QUANTILES = [0.01, 0.10, 0.50, 0.90, 0.99]
 
 
@@ -227,22 +225,32 @@ def auto_downsample_height_width(img: np.ndarray, target_size: int = 150, max_si
     return img[:, ::downsample_factor, ::downsample_factor]
 
 
-def sample_images(image_paths: list[str]) -> np.ndarray:
-    sampled_indices = sample_indices(len(image_paths))
+def sample_images(images: np.ndarray | list[np.ndarray]) -> np.ndarray:
+    """Subsample and downsample a batch of images for stats computation.
 
-    images = None
+    Args:
+        images: Either a (N, C, H, W) uint8 numpy array or a list of
+            (C, H, W) uint8 numpy arrays (channel-first).
+
+    Returns:
+        A (S, C, H, W) uint8 numpy array where S <= N is determined by
+        :func:`sample_indices`.
+    """
+    if isinstance(images, list):
+        images = np.stack(images)
+
+    sampled_indices = sample_indices(len(images))
+
+    result = None
     for i, idx in enumerate(sampled_indices):
-        path = image_paths[idx]
-        # we load as uint8 to reduce memory usage
-        img = load_image_as_numpy(path, dtype=np.uint8, channel_first=True)
-        img = auto_downsample_height_width(img)
+        img = auto_downsample_height_width(images[idx])
 
-        if images is None:
-            images = np.empty((len(sampled_indices), *img.shape), dtype=np.uint8)
+        if result is None:
+            result = np.empty((len(sampled_indices), *img.shape), dtype=np.uint8)
 
-        images[i] = img
+        result[i] = img
 
-    return images
+    return result
 
 
 def _reshape_stats_by_axis(
@@ -475,22 +483,21 @@ def get_feature_stats(
 
 
 def compute_episode_stats(
-    episode_data: dict[str, list[str] | np.ndarray],
+    episode_data: dict[str, np.ndarray],
     features: dict,
     quantile_list: list[float] | None = None,
 ) -> dict:
     """Compute comprehensive statistics for all features in an episode.
 
     Processes different data types appropriately:
-    - Images/videos: Samples from paths, computes per-channel stats, normalizes to [0,1]
+    - Images/videos: (N, C, H, W) uint8 arrays — subsampled, per-channel stats, normalized to [0,1]
     - Numerical arrays: Computes per-feature statistics
     - Strings: Skipped (no statistics computed)
 
     Args:
-        episode_data: Dictionary mapping feature names to data
-            - For images/videos: list of file paths
-            - For numerical data: numpy arrays
-        features: Dictionary describing each feature's dtype and shape
+        episode_data: Dictionary mapping feature names to numpy arrays.
+            For images/videos the arrays should be (N, C, H, W) uint8.
+        features: Dictionary describing each feature's dtype and shape.
 
     Returns:
         Dictionary mapping feature names to their statistics dictionaries.

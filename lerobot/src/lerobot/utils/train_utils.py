@@ -18,7 +18,6 @@ from pathlib import Path
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
-from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.utils import load_json, write_json
 from lerobot.optim import load_optimizer_state, load_scheduler_state, save_optimizer_state, save_scheduler_state
 from lerobot.policies.pretrained import PreTrainedPolicy
@@ -63,16 +62,15 @@ def update_last_checkpoint(checkpoint_dir: Path) -> Path:
 def save_checkpoint(
     checkpoint_dir: Path,
     step: int,
-    cfg: TrainPipelineConfig,
     policy: PreTrainedPolicy,
     optimizer: Optimizer,
     scheduler: LRScheduler | None = None,
+    is_peft: bool = False,
 ) -> None:
-    """Save policy weights, training config, and optimizer/scheduler state."""
+    """Save policy weights and optimizer/scheduler state."""
     pretrained_dir = checkpoint_dir / PRETRAINED_MODEL_DIR
     policy.save_pretrained(pretrained_dir)
-    cfg.save_pretrained(pretrained_dir)
-    if cfg.peft is not None:
+    if is_peft:
         policy.config.save_pretrained(pretrained_dir)
     save_training_state(checkpoint_dir, step, optimizer, scheduler)
 

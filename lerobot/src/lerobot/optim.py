@@ -15,9 +15,7 @@ import torch
 from safetensors.torch import load_file, save_file
 from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 
-from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.utils import flatten_dict, unflatten_dict, write_json
-from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import (
     OPTIMIZER_PARAM_GROUPS,
     OPTIMIZER_STATE,
@@ -117,16 +115,15 @@ PRESETS: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 def make_optimizer_and_scheduler(
-    cfg: TrainPipelineConfig, policy: PreTrainedPolicy
+    policy_type: str, params: OptimizerParams, num_training_steps: int
 ) -> OptimizerResult:
     """Build optimizer, scheduler, and grad_clip_norm for the given policy type."""
-    policy_type = cfg.policy.type
     if policy_type not in PRESETS:
         raise ValueError(
             f"No optimizer preset for policy type '{policy_type}'. "
             f"Available: {list(PRESETS.keys())}"
         )
-    return PRESETS[policy_type](policy.parameters(), cfg.steps)
+    return PRESETS[policy_type](params, num_training_steps)
 
 
 # ---------------------------------------------------------------------------
