@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import importlib
 import logging
-from typing import Any, TypedDict
+from collections.abc import Callable
+from typing import Any
 
 import torch
-from typing_extensions import Unpack
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType
@@ -14,11 +14,6 @@ from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.pi05.configuration_pi05 import PI05Config
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.utils import validate_visual_features_consistency
-from lerobot.processor.pipeline import PolicyProcessorPipeline
-from lerobot.utils.constants import (
-    POLICY_POSTPROCESSOR_DEFAULT_NAME,
-    POLICY_PREPROCESSOR_DEFAULT_NAME,
-)
 
 
 def get_policy_class(name: str) -> type[PreTrainedPolicy]:
@@ -56,61 +51,25 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
             raise ValueError(f"Policy type '{policy_type}' is not available.") from e
 
 
-class ProcessorConfigKwargs(TypedDict, total=False):
-    preprocessor_config_filename: str | None
-    postprocessor_config_filename: str | None
-    preprocessor_overrides: dict[str, Any] | None
-    postprocessor_overrides: dict[str, Any] | None
-    dataset_stats: dict[str, dict[str, torch.Tensor]] | None
-
-
 def make_pre_post_processors(
     policy_cfg: PreTrainedConfig,
-    pretrained_path: str | None = None,
-    **kwargs: Unpack[ProcessorConfigKwargs],
-) -> tuple[PolicyProcessorPipeline, PolicyProcessorPipeline]:
-    """Create or load pre-/post-processor pipelines for a given policy."""
-    if pretrained_path:
-        return (
-            PolicyProcessorPipeline.from_pretrained(
-                pretrained_model_name_or_path=pretrained_path,
-                config_filename=kwargs.get(
-                    "preprocessor_config_filename", f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json"
-                ),
-                overrides=kwargs.get("preprocessor_overrides", {}),
-            ),
-            PolicyProcessorPipeline.from_pretrained(
-                pretrained_model_name_or_path=pretrained_path,
-                config_filename=kwargs.get(
-                    "postprocessor_config_filename", f"{POLICY_POSTPROCESSOR_DEFAULT_NAME}.json"
-                ),
-                overrides=kwargs.get("postprocessor_overrides", {}),
-            ),
-        )
-
+    dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
+) -> tuple[Callable, Callable]:
+    """Create pre-/post-processor callables for a given policy config."""
     if isinstance(policy_cfg, PI0Config):
         from lerobot.policies.pi0.processor_pi0 import make_pi0_pre_post_processors
 
-        processors = make_pi0_pre_post_processors(
-            config=policy_cfg, dataset_stats=kwargs.get("dataset_stats")
-        )
+        return make_pi0_pre_post_processors(config=policy_cfg, dataset_stats=dataset_stats)
 
-    elif isinstance(policy_cfg, PI05Config):
+    if isinstance(policy_cfg, PI05Config):
         from lerobot.policies.pi05.processor_pi05 import make_pi05_pre_post_processors
 
-        processors = make_pi05_pre_post_processors(
-            config=policy_cfg, dataset_stats=kwargs.get("dataset_stats")
-        )
+        return make_pi05_pre_post_processors(config=policy_cfg, dataset_stats=dataset_stats)
 
-    else:
-        try:
-            processors = _make_processors_from_policy_config(
-                config=policy_cfg, dataset_stats=kwargs.get("dataset_stats")
-            )
-        except Exception as e:
-            raise ValueError(f"Processor for policy type '{policy_cfg.type}' is not implemented.") from e
-
-    return processors
+    try:
+        return _make_processors_from_policy_config(config=policy_cfg, dataset_stats=dataset_stats)
+    except Exception as e:
+        raise ValueError(f"Processor for policy type '{policy_cfg.type}' is not implemented.") from e
 
 
 def make_policy(
@@ -200,7 +159,7 @@ def _get_policy_cls_from_policy_name(name: str) -> type[PreTrainedConfig]:
 def _make_processors_from_policy_config(
     config: PreTrainedConfig,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
-) -> tuple[Any, Any]:
+) -> tuple[Callable, Callable]:
     policy_type = config.type
     function_name = f"make_{policy_type}_pre_post_processors"
     module_path = config.__class__.__module__.replace("configuration_", "processor_")

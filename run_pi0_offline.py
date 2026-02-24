@@ -237,11 +237,7 @@ def main():
     policy.eval()
     policy.config.device = device
 
-    preprocessor, postprocessor = make_pre_post_processors(
-        policy.config,
-        args.model,
-        preprocessor_overrides={"device_processor": {"device": str(device)}},
-    )
+    preprocessor, postprocessor = make_pre_post_processors(policy.config)
 
     observation = build_observation(
         policy,
