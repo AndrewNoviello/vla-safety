@@ -143,10 +143,7 @@ def make_pre_post_processors(
     policy_cfg: PreTrainedConfig,
     pretrained_path: str | None = None,
     **kwargs: Unpack[ProcessorConfigKwargs],
-) -> tuple[
-    PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
-    PolicyProcessorPipeline[PolicyAction, PolicyAction],
-]:
+) -> tuple[PolicyProcessorPipeline, PolicyProcessorPipeline]:
     """
     Create or load pre- and post-processor pipelines for a given policy.
 

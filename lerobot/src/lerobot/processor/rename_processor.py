@@ -13,81 +13,70 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""Processor step for renaming observation keys in an EnvTransition.
+
+NOTE: This class is kept for checkpoint backward compatibility. Saved pipeline JSONs
+from earlier checkpoints include a 'rename_observations_processor' step entry.
+New pipelines do not include this step since camera keys are always integer-indexed
+(observation.images.0, observation.images.1, …) and no runtime renaming is needed.
+"""
+
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
-from lerobot.configs.types import PipelineFeatureType, PolicyFeature
-
-from .pipeline import ObservationProcessorStep, ProcessorStepRegistry
+from .core import EnvTransition, TransitionKey
+from .pipeline import ProcessorStep
 
 
 @dataclass
-@ProcessorStepRegistry.register(name="rename_observations_processor")
-class RenameObservationsProcessorStep(ObservationProcessorStep):
-    """
-    A processor step that renames keys in an observation dictionary.
+class RenameObservationsProcessorStep(ProcessorStep):
+    """Rename keys in the observation dict of an EnvTransition.
 
-    This step is useful for creating a standardized data interface by mapping keys
-    from an environment's format to the format expected by a LeRobot policy or
-    other downstream components.
+    Maps old observation keys to new ones according to ``rename_map``.
+    Keys absent from the map are preserved unchanged.
 
     Attributes:
-        rename_map: A dictionary mapping from old key names to new key names.
-                    Keys present in an observation that are not in this map will
-                    be kept with their original names.
+        rename_map: Mapping from old key names to new key names.
     """
+
+    _registry_name = "rename_observations_processor"
 
     rename_map: dict[str, str] = field(default_factory=dict)
 
-    def observation(self, observation):
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        new_transition = transition.copy()
+        observation = new_transition.get(TransitionKey.OBSERVATION)
+        if observation is None:
+            return new_transition
+
+        if not self.rename_map:
+            return new_transition
+
         processed_obs = {}
         for key, value in observation.items():
-            if key in self.rename_map:
-                processed_obs[self.rename_map[key]] = value
-            else:
-                processed_obs[key] = value
-
-        return processed_obs
+            new_key = self.rename_map.get(key, key)
+            processed_obs[new_key] = value
+        new_transition[TransitionKey.OBSERVATION] = processed_obs
+        return new_transition
 
     def get_config(self) -> dict[str, Any]:
         return {"rename_map": self.rename_map}
 
-    def transform_features(
-        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
-    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
-        """Transforms:
-        - Each key in the observation that appears in `rename_map` is renamed to its value.
-        - Keys not in `rename_map` remain unchanged.
-        """
-        new_features: dict[PipelineFeatureType, dict[str, PolicyFeature]] = features.copy()
-        new_features[PipelineFeatureType.OBSERVATION] = {
-            self.rename_map.get(k, k): v for k, v in features[PipelineFeatureType.OBSERVATION].items()
-        }
-        return new_features
-
 
 def rename_stats(stats: dict[str, dict[str, Any]], rename_map: dict[str, str]) -> dict[str, dict[str, Any]]:
-    """
-    Renames the top-level keys in a statistics dictionary using a provided mapping.
+    """Rename top-level keys in a statistics dictionary using the provided mapping.
 
-    This is a helper function typically used to keep normalization statistics
-    consistent with renamed observation or action features. It performs a defensive
-    deep copy to avoid modifying the original `stats` dictionary.
+    Useful for keeping normalization statistics consistent with renamed observation keys.
 
     Args:
-        stats: A nested dictionary of statistics, where top-level keys are
-               feature names (e.g., `{"observation.state": {"mean": 0.5}}`).
-        rename_map: A dictionary mapping old feature names to new feature names.
+        stats: Nested statistics dict (e.g. {"observation.state": {"mean": ...}}).
+        rename_map: Mapping from old feature names to new feature names.
 
     Returns:
-        A new statistics dictionary with its top-level keys renamed. Returns an
-        empty dictionary if the input `stats` is empty.
+        New statistics dict with top-level keys renamed.
     """
     if not stats:
         return {}
-    renamed: dict[str, dict[str, Any]] = {}
-    for old_key, sub_stats in stats.items():
-        new_key = rename_map.get(old_key, old_key)
-        renamed[new_key] = deepcopy(sub_stats) if sub_stats is not None else {}
-    return renamed
+    return {rename_map.get(k, k): deepcopy(v) if v is not None else {} for k, v in stats.items()}

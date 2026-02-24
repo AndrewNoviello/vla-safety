@@ -42,8 +42,6 @@ from lerobot.processor import (
     PolicyAction,
     PolicyProcessorPipeline,
     ProcessorStep,
-    ProcessorStepRegistry,
-    RenameObservationsProcessorStep,
 )
 from lerobot.processor.converters import (
     policy_action_to_transition,
@@ -66,22 +64,18 @@ DEFAULT_TOKENIZER_ASSETS_REPO = "lerobot/eagle2hg-processor-groot-n1p5"
 
 def make_groot_pre_post_processors(
     config: GrootConfig, dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None
-) -> tuple[
-    PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
-    PolicyProcessorPipeline[PolicyAction, PolicyAction],
-]:
+) -> tuple[PolicyProcessorPipeline, PolicyProcessorPipeline]:
     """Create preprocessor and postprocessor for Groot policy.
 
     This creates a processing pipeline that transforms LeRobot data format into
     the format expected by Isaac-GR00T models:
 
     Preprocessing steps:
-    1. Optional key renaming (dataset-specific key mapping)
-    2. Add batch dimension to unbatched data
-    3. Pack video/state/action/language/embodiment and apply optional min-max normalization before padding
-    4. Encode video+language with Eagle VLM into intermediate eagle_content
-    5. Collate eagle_content into batched eagle_* tensors
-    6. Move tensors to device (GPU)
+    1. Add batch dimension to unbatched data
+    2. Pack video/state/action/language/embodiment and apply optional min-max normalization before padding
+    3. Encode video+language with Eagle VLM into intermediate eagle_content
+    4. Collate eagle_content into batched eagle_* tensors
+    5. Move tensors to device (GPU)
 
     NOTE: We optionally apply min-max normalization to STATE and ACTION using
     dataset-provided statistics prior to padding, mapping values to [-1, 1].
@@ -129,12 +123,9 @@ def make_groot_pre_post_processors(
         env_action_dim = 0
 
     input_steps: list[ProcessorStep] = [
-        # 1. Rename keys if needed (e.g., dataset-specific camera names)
-        # Leave empty for now - add mappings if your dataset uses different key names
-        RenameObservationsProcessorStep(rename_map={}),
-        # 2. Add batch dimension for single samples
+        # 1. Add batch dimension for single samples
         AddBatchDimensionProcessorStep(),
-        # 3. Pack video/state/action/language/embodiment; apply optional min-max normalization before padding
+        # 2. Pack video/state/action/language/embodiment; apply optional min-max normalization before padding
         GrootPackInputsStep(
             state_horizon=state_horizon,
             action_horizon=action_horizon,
@@ -146,15 +137,15 @@ def make_groot_pre_post_processors(
             normalize_min_max=True,
             stats=padded_stats,
         ),
-        # 4. Eagle encode (creates eagle_content)
+        # 3. Eagle encode (creates eagle_content)
         GrootEagleEncodeStep(
             tokenizer_assets_repo=config.tokenizer_assets_repo,
         ),
-        # 5. Collate eagle_content -> eagle_* tensors
+        # 4. Collate eagle_content -> eagle_* tensors
         GrootEagleCollateStep(
             tokenizer_assets_repo=config.tokenizer_assets_repo,
         ),
-        # 6. Move to device
+        # 5. Move to device
         DeviceProcessorStep(device=config.device),
     ]
 
@@ -170,17 +161,56 @@ def make_groot_pre_post_processors(
     ]
 
     return (
-        PolicyProcessorPipeline[dict[str, Any], dict[str, Any]](
+        PolicyProcessorPipeline(
             steps=input_steps,
             name=POLICY_PREPROCESSOR_DEFAULT_NAME,
         ),
-        PolicyProcessorPipeline[PolicyAction, PolicyAction](
+        PolicyProcessorPipeline(
             steps=output_steps,
             name=POLICY_POSTPROCESSOR_DEFAULT_NAME,
             to_transition=policy_action_to_transition,
             to_output=transition_to_policy_action,
         ),
     )
+
+
+def preprocess(
+    obs: dict[str, Any],
+    task: str | list[str],
+    preprocessor: PolicyProcessorPipeline,
+) -> dict[str, Any]:
+    """Preprocess a single observation for inference.
+
+    Build the preprocessor once with make_groot_pre_post_processors() and pass it here.
+
+    Args:
+        obs: Observation dict with integer-indexed camera keys, e.g.:
+             {"observation.images.0": Tensor(H,W,C), "observation.state": Tensor(D)}
+        task: Natural language instruction (string or batched list).
+        preprocessor: Pipeline built by make_groot_pre_post_processors().
+
+    Returns:
+        Batch dict ready for model forward pass.
+    """
+    batch = dict(obs)
+    batch["task"] = task
+    return preprocessor(batch)
+
+
+def postprocess(
+    action: torch.Tensor,
+    postprocessor: PolicyProcessorPipeline,
+) -> torch.Tensor:
+    """Unnormalize and move model action output to CPU.
+
+    Args:
+        action: Raw action tensor from model forward pass.
+        postprocessor: Pipeline built by make_groot_pre_post_processors().
+
+    Returns:
+        Unnormalized action tensor on CPU.
+    """
+    return postprocessor(action)
 
 
 # GR00T specific processor steps
@@ -213,8 +243,9 @@ def _build_eagle_processor(tokenizer_assets_repo: str = DEFAULT_TOKENIZER_ASSETS
 
 
 @dataclass
-@ProcessorStepRegistry.register(name="groot_pack_inputs_v3")
 class GrootPackInputsStep(ProcessorStep):
+    _registry_name = "groot_pack_inputs_v3"
+
     state_horizon: int = 1
     action_horizon: int = 16
     max_state_dim: int = 64
@@ -375,10 +406,6 @@ class GrootPackInputsStep(ProcessorStep):
         transition[TransitionKey.COMPLEMENTARY_DATA] = comp
         return transition
 
-    # Pipeline API requirement: declare how features change (we keep it simple)
-    def transform_features(self, features):
-        return features
-
     def get_config(self) -> dict[str, Any]:
         """
         Returns a serializable dictionary of the processor's configuration.
@@ -435,8 +462,9 @@ class GrootPackInputsStep(ProcessorStep):
 
 
 @dataclass
-@ProcessorStepRegistry.register(name="groot_eagle_encode_v3")
 class GrootEagleEncodeStep(ProcessorStep):
+    _registry_name = "groot_eagle_encode_v3"
+
     tokenizer_assets_repo: str = DEFAULT_TOKENIZER_ASSETS_REPO
     _proc: ProcessorMixin | None = field(default=None, init=False, repr=False)
 
@@ -490,10 +518,6 @@ class GrootEagleEncodeStep(ProcessorStep):
         transition[TransitionKey.COMPLEMENTARY_DATA] = comp
         return transition
 
-    # Pipeline API requirement: declare how features change (no schema change here)
-    def transform_features(self, features):
-        return features
-
 
 # Original GR00T-style collate: converts eagle_content -> eagle_* tensors
 def collate(features: list[dict[str, Any]], eagle_processor: ProcessorMixin) -> dict[str, Any]:
@@ -532,8 +556,9 @@ def collate(features: list[dict[str, Any]], eagle_processor: ProcessorMixin) -> 
 
 
 @dataclass
-@ProcessorStepRegistry.register(name="groot_eagle_collate_v3")
 class GrootEagleCollateStep(ProcessorStep):
+    _registry_name = "groot_eagle_collate_v3"
+
     tokenizer_assets_repo: str = DEFAULT_TOKENIZER_ASSETS_REPO
     _proc: ProcessorMixin | None = field(default=None, init=False, repr=False)
 
@@ -565,13 +590,11 @@ class GrootEagleCollateStep(ProcessorStep):
         transition[TransitionKey.COMPLEMENTARY_DATA] = comp
         return transition
 
-    def transform_features(self, features):
-        return features
-
 
 @dataclass
-@ProcessorStepRegistry.register(name="groot_action_unpack_unnormalize_v1")
 class GrootActionUnpackUnnormalizeStep(ProcessorStep):
+    _registry_name = "groot_action_unpack_unnormalize_v1"
+
     env_action_dim: int = 0
     # Apply inverse of min-max normalization if it was used in preprocessor
     normalize_min_max: bool = True
@@ -616,9 +639,6 @@ class GrootActionUnpackUnnormalizeStep(ProcessorStep):
 
         transition[TransitionKey.ACTION] = action
         return transition
-
-    def transform_features(self, features):
-        return features
 
     def get_config(self) -> dict[str, Any]:
         """

@@ -21,7 +21,6 @@ from typing import Any
 import numpy as np
 import torch
 
-from lerobot.configs.types import PipelineFeatureType, PolicyFeature
 from lerobot.policies.pi0_fast.configuration_pi0_fast import PI0FastConfig
 from lerobot.policies.pi0_fast.modeling_pi0_fast import pad_vector
 from lerobot.processor import (
@@ -32,8 +31,6 @@ from lerobot.processor import (
     PolicyAction,
     PolicyProcessorPipeline,
     ProcessorStep,
-    ProcessorStepRegistry,
-    RenameObservationsProcessorStep,
     TokenizerProcessorStep,
     UnnormalizerProcessorStep,
 )
@@ -46,12 +43,13 @@ from lerobot.utils.constants import (
 )
 
 
-@ProcessorStepRegistry.register(name="pi0_fast_prepare_state_tokenizer_processor_step")
 @dataclass
 class Pi0FastPrepareStateAndLanguageTokenizerProcessorStep(ProcessorStep):
     """
     Processor step to prepare the state and tokenize the language input.
     """
+
+    _registry_name = "pi0_fast_prepare_state_tokenizer_processor_step"
 
     max_state_dim: int = 32
     task_key: str = "task"
@@ -89,49 +87,34 @@ class Pi0FastPrepareStateAndLanguageTokenizerProcessorStep(ProcessorStep):
         # Discretize into 256 bins (see openpi `PaligemmaTokenizer.tokenize()`)
         return transition
 
-    def transform_features(
-        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
-    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
-        """
-        This step does not alter the feature definitions.
-        """
-        return features
-
 
 def make_pi0_fast_pre_post_processors(
     config: PI0FastConfig,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
-) -> tuple[
-    PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
-    PolicyProcessorPipeline[PolicyAction, PolicyAction],
-]:
+) -> tuple[PolicyProcessorPipeline, PolicyProcessorPipeline]:
     """
     Constructs pre-processor and post-processor pipelines for the PI0Fast policy.
 
     The pre-processing pipeline prepares input data for the model by:
-    1. Renaming features to match pretrained configurations.
+    1. Adding a batch dimension.
     2. Normalizing input and output features based on dataset statistics.
-    3. Adding a batch dimension.
-    4. Appending a newline character to the task description for tokenizer compatibility.
-    5. Tokenizing the text prompt using the PaliGemma tokenizer.
+    3. Preparing state and building PaliGemma-compatible language prompt.
+    4. Tokenizing the text prompt using the PaliGemma tokenizer.
+    5. Tokenizing the action sequence.
     6. Moving all data to the specified device.
 
     The post-processing pipeline handles the model's output by:
-    1. Moving data to the CPU.
-    2. Unnormalizing the output features to their original scale.
+    1. Unnormalizing the output features to their original scale.
+    2. Moving data to the CPU.
 
     Args:
         config: The configuration object for the PI0Fast policy.
         dataset_stats: A dictionary of statistics for normalization.
-        preprocessor_kwargs: Additional arguments for the pre-processor pipeline.
-        postprocessor_kwargs: Additional arguments for the post-processor pipeline.
 
     Returns:
         A tuple containing the configured pre-processor and post-processor pipelines.
     """
-    # Add remaining processors
     input_steps: list[ProcessorStep] = [
-        RenameObservationsProcessorStep(rename_map={}),  # To mimic the same processor as pretrained one
         AddBatchDimensionProcessorStep(),
         # NOTE: NormalizerProcessorStep MUST come before Pi0FastPrepareStateAndLanguageTokenizerProcessorStep
         # because the tokenizer step expects normalized state in [-1, 1] range for discretization
@@ -164,14 +147,53 @@ def make_pi0_fast_pre_post_processors(
     ]
 
     return (
-        PolicyProcessorPipeline[dict[str, Any], dict[str, Any]](
+        PolicyProcessorPipeline(
             steps=input_steps,
             name=POLICY_PREPROCESSOR_DEFAULT_NAME,
         ),
-        PolicyProcessorPipeline[PolicyAction, PolicyAction](
+        PolicyProcessorPipeline(
             steps=output_steps,
             name=POLICY_POSTPROCESSOR_DEFAULT_NAME,
             to_transition=policy_action_to_transition,
             to_output=transition_to_policy_action,
         ),
     )
+
+
+def preprocess(
+    obs: dict[str, Any],
+    task: str | list[str],
+    preprocessor: PolicyProcessorPipeline,
+) -> dict[str, Any]:
+    """Preprocess a single observation for inference.
+
+    Build the preprocessor once with make_pi0_fast_pre_post_processors() and pass it here.
+
+    Args:
+        obs: Observation dict with integer-indexed camera keys, e.g.:
+             {"observation.images.0": Tensor(H,W,C), "observation.state": Tensor(D)}
+        task: Natural language instruction (string or batched list).
+        preprocessor: Pipeline built by make_pi0_fast_pre_post_processors().
+
+    Returns:
+        Batch dict ready for model forward pass.
+    """
+    batch = dict(obs)
+    batch["task"] = task
+    return preprocessor(batch)
+
+
+def postprocess(
+    action: torch.Tensor,
+    postprocessor: PolicyProcessorPipeline,
+) -> torch.Tensor:
+    """Unnormalize and move model action output to CPU.
+
+    Args:
+        action: Raw action tensor from model forward pass.
+        postprocessor: Pipeline built by make_pi0_fast_pre_post_processors().
+
+    Returns:
+        Unnormalized action tensor on CPU.
+    """
+    return postprocessor(action)
