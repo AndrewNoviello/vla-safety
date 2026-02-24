@@ -17,24 +17,14 @@
 from dataclasses import dataclass, field
 
 from lerobot.datasets.transforms import ImageTransformsConfig
-from lerobot.datasets.video_utils import get_safe_default_codec
 
 
 @dataclass
 class DatasetConfig:
-    # You may provide a list of datasets here. `train.py` creates them all and concatenates them. Note: only data
-    # keys common between the datasets are kept. Each dataset gets and additional transform that inserts the
-    # "dataset_index" into the returned item. The index mapping is made according to the order in which the
-    # datasets are provided.
     repo_id: str
-    # Root directory where the dataset will be stored (e.g. 'dataset/path').
     root: str | None = None
     episodes: list[int] | None = None
     image_transforms: ImageTransformsConfig = field(default_factory=ImageTransformsConfig)
-    revision: str | None = None
-    use_imagenet_stats: bool = True
-    video_backend: str = field(default_factory=get_safe_default_codec)
-    streaming: bool = False
 
 
 @dataclass

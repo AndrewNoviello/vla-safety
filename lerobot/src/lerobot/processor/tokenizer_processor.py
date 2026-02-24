@@ -1,20 +1,4 @@
-#!/usr/bin/env python
-
-# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-"""Processor steps for tokenizing natural language task descriptions and action sequences."""
+"""Processor steps for tokenizing task descriptions and action sequences."""
 
 from __future__ import annotations
 
@@ -25,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from lerobot.utils.constants import (
+    ACTION,
     ACTION_TOKEN_MASK,
     ACTION_TOKENS,
     OBS_LANGUAGE_ATTENTION_MASK,
@@ -34,7 +19,6 @@ from lerobot.utils.constants import (
 )
 from lerobot.utils.import_utils import _transformers_available
 
-from .core import EnvTransition, TransitionKey
 from .pipeline import ProcessorStep
 
 if TYPE_CHECKING or _transformers_available:
@@ -46,22 +30,10 @@ else:
 
 @dataclass
 class TokenizerProcessorStep(ProcessorStep):
-    """Tokenize a natural language task description and add tokens to the observation.
+    """Tokenize task text from ``batch["task"]`` and write tokens into the batch.
 
-    Extracts the task string from ``complementary_data``, tokenizes it with a HuggingFace
-    tokenizer, and stores the resulting token IDs and attention mask in the observation dict
-    under ``observation.language.tokens`` and ``observation.language.attention_mask``.
-
-    Requires the ``transformers`` library to be installed.
-
-    Attributes:
-        tokenizer_name: Hub name of a pretrained tokenizer.
-        tokenizer: Pre-initialized tokenizer object (takes priority over tokenizer_name).
-        max_length: Max sequence length for padding/truncation.
-        task_key: Key in complementary_data containing the task string.
-        padding_side: 'left' or 'right'.
-        padding: Padding strategy ('max_length', 'longest', etc.).
-        truncation: Whether to truncate to max_length.
+    Writes ``observation.language.tokens`` and ``observation.language.attention_mask``
+    (and subtask variants if ``batch["subtask"]`` is present).
     """
 
     _registry_name = "tokenizer_processor"
@@ -91,19 +63,15 @@ class TokenizerProcessorStep(ProcessorStep):
         else:
             raise ValueError("Either 'tokenizer' or 'tokenizer_name' must be provided.")
 
-    def __call__(self, transition: EnvTransition) -> EnvTransition:
-        new_transition = transition.copy()
+    def __call__(self, batch: dict[str, Any]) -> dict[str, Any]:
+        batch = dict(batch)
 
-        observation = new_transition.get(TransitionKey.OBSERVATION)
-        if observation is None or not isinstance(observation, dict):
-            raise ValueError("TokenizerProcessorStep requires an observation dict in the transition.")
-
-        task = self._get_task(transition)
+        task = self._get_task(batch)
         if task is None:
             raise ValueError("Task cannot be None")
 
         tokenized_prompt = self._tokenize_text(task)
-        target_device = self._detect_device(transition)
+        target_device = self._detect_device(batch)
 
         if target_device is not None:
             tokenized_prompt = {
@@ -111,13 +79,10 @@ class TokenizerProcessorStep(ProcessorStep):
                 for k, v in tokenized_prompt.items()
             }
 
-        new_observation = dict(observation)
-        new_observation[OBS_LANGUAGE_TOKENS] = tokenized_prompt["input_ids"]
-        new_observation[OBS_LANGUAGE_ATTENTION_MASK] = tokenized_prompt["attention_mask"].to(
-            dtype=torch.bool
-        )
+        batch[OBS_LANGUAGE_TOKENS] = tokenized_prompt["input_ids"]
+        batch[OBS_LANGUAGE_ATTENTION_MASK] = tokenized_prompt["attention_mask"].to(dtype=torch.bool)
 
-        subtask = self._get_subtask(transition)
+        subtask = self._get_subtask(batch)
         if subtask is not None:
             tokenized_subtask = self._tokenize_text(subtask)
             if target_device is not None:
@@ -125,32 +90,25 @@ class TokenizerProcessorStep(ProcessorStep):
                     k: v.to(target_device) if isinstance(v, torch.Tensor) else v
                     for k, v in tokenized_subtask.items()
                 }
-            new_observation[OBS_LANGUAGE_SUBTASK_TOKENS] = tokenized_subtask["input_ids"]
-            new_observation[OBS_LANGUAGE_SUBTASK_ATTENTION_MASK] = tokenized_subtask[
-                "attention_mask"
-            ].to(dtype=torch.bool)
+            batch[OBS_LANGUAGE_SUBTASK_TOKENS] = tokenized_subtask["input_ids"]
+            batch[OBS_LANGUAGE_SUBTASK_ATTENTION_MASK] = tokenized_subtask["attention_mask"].to(
+                dtype=torch.bool
+            )
 
-        new_transition[TransitionKey.OBSERVATION] = new_observation
-        return new_transition
+        return batch
 
-    def _get_task(self, transition: EnvTransition) -> list[str] | None:
-        comp = transition.get(TransitionKey.COMPLEMENTARY_DATA)
-        if comp is None:
-            raise ValueError("Complementary data is None — cannot extract task.")
-        task = comp[self.task_key]
+    def _get_task(self, batch: dict[str, Any]) -> list[str] | None:
+        task = batch.get(self.task_key)
         if task is None:
-            raise ValueError("Task in complementary data is None.")
+            raise ValueError(f"Key '{self.task_key}' not found in batch.")
         if isinstance(task, str):
             return [task]
         if isinstance(task, list) and all(isinstance(t, str) for t in task):
             return task
         return None
 
-    def _get_subtask(self, transition: EnvTransition) -> list[str] | None:
-        comp = transition.get(TransitionKey.COMPLEMENTARY_DATA)
-        if comp is None:
-            return None
-        subtask = comp.get("subtask")
+    def _get_subtask(self, batch: dict[str, Any]) -> list[str] | None:
+        subtask = batch.get("subtask")
         if subtask is None:
             return None
         if isinstance(subtask, str):
@@ -159,15 +117,10 @@ class TokenizerProcessorStep(ProcessorStep):
             return subtask
         return None
 
-    def _detect_device(self, transition: EnvTransition) -> torch.device | None:
-        observation = transition.get(TransitionKey.OBSERVATION)
-        if observation:
-            for value in observation.values():
-                if isinstance(value, torch.Tensor):
-                    return value.device
-        action = transition.get(TransitionKey.ACTION)
-        if isinstance(action, torch.Tensor):
-            return action.device
+    def _detect_device(self, batch: dict[str, Any]) -> torch.device | None:
+        for value in batch.values():
+            if isinstance(value, torch.Tensor):
+                return value.device
         return None
 
     def _tokenize_text(self, text: str | list[str]) -> dict[str, torch.Tensor]:
@@ -181,7 +134,7 @@ class TokenizerProcessorStep(ProcessorStep):
         )
 
     def get_config(self) -> dict[str, Any]:
-        config = {
+        config: dict[str, Any] = {
             "max_length": self.max_length,
             "task_key": self.task_key,
             "padding_side": self.padding_side,
@@ -195,21 +148,7 @@ class TokenizerProcessorStep(ProcessorStep):
 
 @dataclass
 class ActionTokenizerProcessorStep(ProcessorStep):
-    """Tokenize action tensors using a fast action tokenizer (PI0_FAST).
-
-    Takes action tensors from an EnvTransition, tokenizes them with a HuggingFace
-    AutoProcessor, and stores the tokens and mask in complementary_data.
-
-    Requires the ``transformers`` library to be installed.
-
-    Attributes:
-        action_tokenizer_name: Hub name of a pretrained action tokenizer processor.
-        action_tokenizer_input_object: Pre-initialized tokenizer (takes priority).
-        trust_remote_code: Whether to trust remote code when loading.
-        max_action_tokens: Maximum number of tokens in the action sequence.
-        fast_skip_tokens: Number of tokens to skip in the fast tokenizer.
-        paligemma_tokenizer_name: Hub name of the PaliGemma tokenizer.
-    """
+    """Tokenize ``batch["action"]`` and write tokens / mask into the batch."""
 
     _registry_name = "action_tokenizer_processor"
 
@@ -248,35 +187,21 @@ class ActionTokenizerProcessorStep(ProcessorStep):
             add_bos_token=False,
         )
 
-    def __call__(self, transition: EnvTransition) -> EnvTransition:
-        new_transition = transition.copy()
-
-        action = new_transition.get(TransitionKey.ACTION)
+    def __call__(self, batch: dict[str, Any]) -> dict[str, Any]:
+        batch = dict(batch)
+        action = batch.get(ACTION)
         if action is None:
-            # During inference, no action is available — skip tokenization.
-            return new_transition
+            return batch
 
         tokens, mask = self._tokenize_action(action)
-
-        comp = new_transition.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {}
-        comp[ACTION_TOKEN_MASK] = mask
-        comp[ACTION_TOKENS] = tokens
-        new_transition[TransitionKey.COMPLEMENTARY_DATA] = comp
-        return new_transition
+        batch[ACTION_TOKEN_MASK] = mask
+        batch[ACTION_TOKENS] = tokens
+        return batch
 
     def _act_tokens_to_paligemma_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
         return self._paligemma_tokenizer.vocab_size - 1 - self.fast_skip_tokens - tokens
 
     def _tokenize_action(self, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Tokenize an action tensor and return (tokens, mask).
-
-        Args:
-            action: Action tensor of shape (B, H, action_dim) or (H, action_dim).
-
-        Returns:
-            Tuple of (tokens, mask), each of shape (B, max_action_tokens) or
-            (max_action_tokens,) for a single sample.
-        """
         device = action.device if isinstance(action, torch.Tensor) else None
 
         single_sample = action.dim() == 1
@@ -348,7 +273,7 @@ class ActionTokenizerProcessorStep(ProcessorStep):
         return tokens_batch, masks_batch
 
     def get_config(self) -> dict[str, Any]:
-        config = {
+        config: dict[str, Any] = {
             "trust_remote_code": self.trust_remote_code,
             "max_action_tokens": self.max_action_tokens,
         }

@@ -21,7 +21,7 @@ import torch
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, PolicyFeature
-from lerobot.processor import RobotObservation
+from typing import Any
 
 
 def log_model_loading_keys(missing_keys: list[str], unexpected_keys: list[str]) -> None:
@@ -43,7 +43,7 @@ def prepare_observation_for_inference(
     device: torch.device,
     task: str | None = None,
     robot_type: str | None = None,
-) -> RobotObservation:
+) -> dict[str, Any]:
     """Converts observation data to model-ready PyTorch tensors.
 
     This function takes a dictionary of NumPy arrays, performs necessary
@@ -95,11 +95,8 @@ def raise_feature_mismatch_error(
         f"Feature mismatch between dataset/environment and policy config.\n"
         f"- Missing features: {sorted(missing) if missing else 'None'}\n"
         f"- Extra features: {sorted(extra) if extra else 'None'}\n\n"
-        f"Please ensure your dataset and policy use consistent feature names.\n"
-        f"If your dataset uses different observation keys (e.g., cameras named differently), "
-        f"use the `--rename_map` argument, for example:\n"
-        f'  --rename_map=\'{{"observation.images.left": "observation.images.camera1", '
-        f'"observation.images.top": "observation.images.camera2"}}\''
+        f"Please ensure your dataset and policy use consistent feature names "
+        f"(observation.images.0, observation.images.1, etc.)."
     )
 
 

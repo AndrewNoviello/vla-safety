@@ -27,15 +27,16 @@ from torch.optim import Optimizer
 
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
-from lerobot.datasets.factory import make_dataset
+from lerobot.datasets.lerobot_dataset import load_dataset
 from lerobot.datasets.sampler import EpisodeAwareSampler
-from lerobot.datasets.utils import cycle
+from lerobot.datasets.transforms import ImageTransforms
+from lerobot.datasets.utils import cycle, resolve_delta_timestamps
 from lerobot.optim import make_optimizer_and_scheduler
-from lerobot.policies.factory import make_policy, make_pre_post_processors
+from lerobot.policies.factory import make_policy
 from lerobot.policies.pretrained import PreTrainedPolicy
-from lerobot.utils.wandb_utils import WandBLogger
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
+from lerobot.utils.processing import normalize, to_device
 from lerobot.utils.random_utils import set_seed
 from lerobot.utils.train_utils import (
     get_step_checkpoint_dir,
@@ -48,6 +49,7 @@ from lerobot.utils.utils import (
     has_method,
     init_logging,
 )
+from lerobot.utils.wandb_utils import WandBLogger
 
 
 def update_policy(
@@ -60,40 +62,14 @@ def update_policy(
     lr_scheduler=None,
     lock=None,
 ) -> tuple[MetricsTracker, dict]:
-    """
-    Performs a single training step to update the policy's weights.
-
-    This function executes the forward and backward passes, clips gradients, and steps the optimizer and
-    learning rate scheduler. Accelerator handles mixed-precision training automatically.
-
-    Args:
-        train_metrics: A MetricsTracker instance to record training statistics.
-        policy: The policy model to be trained.
-        batch: A batch of training data.
-        optimizer: The optimizer used to update the policy's parameters.
-        grad_clip_norm: The maximum norm for gradient clipping.
-        accelerator: The Accelerator instance for distributed training and mixed precision.
-        lr_scheduler: An optional learning rate scheduler.
-        lock: An optional lock for thread-safe optimizer updates.
-
-    Returns:
-        A tuple containing:
-        - The updated MetricsTracker with new statistics for this step.
-        - A dictionary of outputs from the policy's forward pass, for logging purposes.
-    """
     start_time = time.perf_counter()
     policy.train()
 
-    # Let accelerator handle mixed precision
     with accelerator.autocast():
         loss, output_dict = policy.forward(batch)
 
-        # TODO(rcadene): policy.unnormalize_outputs(out_dict)
-
-    # Use accelerator's backward method
     accelerator.backward(loss)
 
-    # Clip gradients if specified
     if grad_clip_norm > 0:
         grad_norm = accelerator.clip_grad_norm_(policy.parameters(), grad_clip_norm)
     else:
@@ -101,17 +77,14 @@ def update_policy(
             policy.parameters(), float("inf"), error_if_nonfinite=False
         )
 
-    # Optimizer step
     with lock if lock is not None else nullcontext():
         optimizer.step()
 
     optimizer.zero_grad()
 
-    # Step through pytorch scheduler at every batch instead of epoch
     if lr_scheduler is not None:
         lr_scheduler.step()
 
-    # Update internal buffers if policy has update method
     if has_method(accelerator.unwrap_model(policy, keep_fp32_wrapper=True), "update"):
         accelerator.unwrap_model(policy, keep_fp32_wrapper=True).update()
 
@@ -124,33 +97,12 @@ def update_policy(
 
 @parser.wrap()
 def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
-    """
-    Main function to train a policy.
-
-    This function orchestrates the entire training pipeline, including:
-    - Setting up logging, seeding, and device configuration.
-    - Creating the dataset, evaluation environment (if applicable), policy, and optimizer.
-    - Handling resumption from a checkpoint.
-    - Running the main training loop, which involves fetching data batches and calling `update_policy`.
-    - Periodically logging metrics, saving model checkpoints, and evaluating the policy.
-    - Pushing the final trained model to the Hugging Face Hub if configured.
-
-    Args:
-        cfg: A `TrainPipelineConfig` object containing all training configurations.
-        accelerator: Optional Accelerator instance. If None, one will be created automatically.
-    """
     cfg.validate()
 
-    # Create Accelerator if not provided
-    # It will automatically detect if running in distributed mode or single-process mode
-    # We set step_scheduler_with_optimizer=False to prevent accelerate from adjusting the lr_scheduler steps based on the num_processes
-    # We set find_unused_parameters=True to handle models with conditional computation
     if accelerator is None:
         from accelerate.utils import DistributedDataParallelKwargs
 
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-        # Accelerate auto-detects the device based on the available hardware and ignores the policy.device setting.
-        # Force the device to be CPU when policy.device is set to CPU.
         force_cpu = cfg.policy.device == "cpu"
         accelerator = Accelerator(
             step_scheduler_with_optimizer=False,
@@ -159,16 +111,11 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         )
 
     init_logging(accelerator=accelerator)
-
-    # Determine if this is the main process (for logging and checkpointing)
-    # When using accelerate, only the main process should log to avoid duplicate outputs
     is_main_process = accelerator.is_main_process
 
-    # Only log on main process
     if is_main_process:
         logging.info(pformat(cfg.to_dict()))
 
-    # Initialize wandb only on main process
     if cfg.wandb.enable and cfg.wandb.project and is_main_process:
         wandb_logger = WandBLogger(cfg)
     else:
@@ -179,79 +126,66 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if cfg.seed is not None:
         set_seed(cfg.seed, accelerator=accelerator)
 
-    # Use accelerator's device
     device = accelerator.device
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
 
-    # Dataset loading synchronization: main process downloads first to avoid race conditions
+    # --- Dataset ---
+    image_transforms = (
+        ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
+    )
+
+    def _create_dataset():
+        """Load dataset, resolving delta_timestamps from the policy config."""
+        ds = load_dataset(
+            cfg.dataset.repo_id,
+            episodes=cfg.dataset.episodes,
+            image_transforms=image_transforms,
+            root=cfg.dataset.root,
+            tolerance_s=cfg.tolerance_s,
+        )
+        delta_timestamps = resolve_delta_timestamps(cfg.policy, ds)
+        if delta_timestamps is not None:
+            ds = load_dataset(
+                cfg.dataset.repo_id,
+                episodes=cfg.dataset.episodes,
+                delta_timestamps=delta_timestamps,
+                image_transforms=image_transforms,
+                root=cfg.dataset.root,
+                tolerance_s=cfg.tolerance_s,
+            )
+        return ds
+
     if is_main_process:
         logging.info("Creating dataset")
-        dataset = make_dataset(cfg)
+        dataset = _create_dataset()
 
     accelerator.wait_for_everyone()
 
-    # Now all other processes can safely load the dataset
     if not is_main_process:
-        dataset = make_dataset(cfg)
+        dataset = _create_dataset()
 
+    # --- Policy ---
     if is_main_process:
         logging.info("Creating policy")
     policy = make_policy(
         cfg=cfg.policy,
         ds_meta=dataset.meta,
-        rename_map=cfg.rename_map,
     )
 
     if cfg.peft is not None:
         logging.info("Using PEFT! Wrapping model.")
-        # Convert CLI peft config to dict for overrides
         peft_cli_overrides = dataclasses.asdict(cfg.peft)
         policy = policy.wrap_with_peft(peft_cli_overrides=peft_cli_overrides)
 
-    # Wait for all processes to finish policy creation before continuing
     accelerator.wait_for_everyone()
 
-    # Create processors - only provide dataset_stats if not resuming from saved processors
-    processor_kwargs = {}
-    postprocessor_kwargs = {}
-    if (cfg.policy.pretrained_path and not cfg.resume) or not cfg.policy.pretrained_path:
-        # Only provide dataset_stats when not resuming from saved processor state
-        processor_kwargs["dataset_stats"] = dataset.meta.stats
-
-    if cfg.policy.pretrained_path is not None:
-        processor_kwargs["preprocessor_overrides"] = {
-            "device_processor": {"device": device.type},
-            "normalizer_processor": {
-                "stats": dataset.meta.stats,
-                "features": {**policy.config.input_features, **policy.config.output_features},
-                "norm_map": policy.config.normalization_mapping,
-            },
-        }
-        processor_kwargs["preprocessor_overrides"]["rename_observations_processor"] = {
-            "rename_map": cfg.rename_map
-        }
-        postprocessor_kwargs["postprocessor_overrides"] = {
-            "unnormalizer_processor": {
-                "stats": dataset.meta.stats,
-                "features": policy.config.output_features,
-                "norm_map": policy.config.normalization_mapping,
-            },
-        }
-
-    preprocessor, postprocessor = make_pre_post_processors(
-        policy_cfg=cfg.policy,
-        pretrained_path=cfg.policy.pretrained_path,
-        **processor_kwargs,
-        **postprocessor_kwargs,
-    )
-
+    # --- Optimizer ---
     if is_main_process:
         logging.info("Creating optimizer and scheduler")
     optimizer, lr_scheduler, grad_clip_norm = make_optimizer_and_scheduler(cfg, policy)
 
-    step = 0  # number of policy updates (forward + backward + optim)
-
+    step = 0
     if cfg.resume:
         step, optimizer, lr_scheduler = load_training_state(cfg.checkpoint_path, optimizer, lr_scheduler)
 
@@ -269,7 +203,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
         logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
-    # create dataloader for offline training
+    # --- Dataloader ---
     if hasattr(cfg.policy, "drop_n_last_frames"):
         shuffle = False
         sampler = EpisodeAwareSampler(
@@ -287,14 +221,13 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         dataset,
         num_workers=cfg.num_workers,
         batch_size=cfg.batch_size,
-        shuffle=shuffle and not cfg.dataset.streaming,
+        shuffle=shuffle,
         sampler=sampler,
         pin_memory=device.type == "cuda",
         drop_last=False,
         prefetch_factor=2 if cfg.num_workers > 0 else None,
     )
 
-    # Prepare everything with accelerator
     accelerator.wait_for_everyone()
     policy, optimizer, dataloader, lr_scheduler = accelerator.prepare(
         policy, optimizer, dataloader, lr_scheduler
@@ -311,7 +244,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         "dataloading_s": AverageMeter("data_s", ":.3f"),
     }
 
-    # Use effective batch size for proper epoch calculation in distributed training
     effective_batch_size = cfg.batch_size * accelerator.num_processes
     train_tracker = MetricsTracker(
         effective_batch_size,
@@ -327,10 +259,15 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             f"Start offline training on a fixed dataset, with effective batch size: {effective_batch_size}"
         )
 
+    # Prepare normalization args from policy config
+    all_features = {**policy.config.input_features, **policy.config.output_features}
+    norm_map = policy.config.normalization_mapping
+
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()
         batch = next(dl_iter)
-        batch = preprocessor(batch)
+        batch = normalize(batch, dataset.stats, all_features, norm_map)
+        batch = to_device(batch, device)
         train_tracker.dataloading_s = time.perf_counter() - start_time
 
         train_tracker, output_dict = update_policy(
@@ -343,8 +280,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             lr_scheduler=lr_scheduler,
         )
 
-        # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
-        # increment `step` here.
         step += 1
         train_tracker.step()
         is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0 and is_main_process
@@ -370,8 +305,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     policy=accelerator.unwrap_model(policy),
                     optimizer=optimizer,
                     scheduler=lr_scheduler,
-                    preprocessor=preprocessor,
-                    postprocessor=postprocessor,
                 )
                 update_last_checkpoint(checkpoint_dir)
                 if wandb_logger:
@@ -388,10 +321,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 unwrapped_policy.push_model_to_hub(cfg, peft_model=unwrapped_policy)
             else:
                 unwrapped_policy.push_model_to_hub(cfg)
-            preprocessor.push_to_hub(cfg.policy.repo_id)
-            postprocessor.push_to_hub(cfg.policy.repo_id)
 
-    # Properly clean up the distributed process group
     accelerator.wait_for_everyone()
     accelerator.end_training()
 

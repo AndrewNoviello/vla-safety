@@ -1,26 +1,12 @@
-#!/usr/bin/env python
-
-# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """
 Sequential data processing pipeline for VLA policy pre- and post-processing.
 
-Core components:
+This is the core module of the processor package. It provides:
+
 - ProcessorStep: Abstract base class for a single transformation step.
-- PolicyProcessorPipeline: Chains steps together and handles Hub save/load.
-- IdentityProcessorStep: No-op step, useful as a placeholder.
+- PolicyProcessorPipeline: Chains steps and handles Hub save/load.
+- DeviceStep / AddBatchDimStep: Built-in concrete steps.
+- Utility functions: to_tensor, from_tensor_to_numpy, images_to_chw_float, move_to_device.
 """
 
 from __future__ import annotations
@@ -30,55 +16,162 @@ import json
 import os
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from functools import singledispatch
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
+import numpy as np
 import torch
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file, save_file
 
+from lerobot.utils.constants import OBS_ENV_STATE, OBS_IMAGE, OBS_IMAGES, OBS_STATE
 from lerobot.utils.hub import HubMixin
+from lerobot.utils.utils import get_safe_torch_device
 
-from .converters import batch_to_transition, transition_to_batch
-from .core import EnvTransition
+
+@singledispatch
+def to_tensor(
+    value: Any,
+    *,
+    dtype: torch.dtype | None = torch.float32,
+    device: torch.device | str | None = None,
+) -> torch.Tensor:
+    """Convert various data types to PyTorch tensors."""
+    raise TypeError(f"Unsupported type for tensor conversion: {type(value)}")
+
+
+@to_tensor.register(torch.Tensor)
+def _(value: torch.Tensor, *, dtype=torch.float32, device=None, **kwargs) -> torch.Tensor:
+    if dtype is not None:
+        value = value.to(dtype=dtype)
+    if device is not None:
+        value = value.to(device=device)
+    return value
+
+
+@to_tensor.register(np.ndarray)
+def _(value: np.ndarray, *, dtype=torch.float32, device=None, **kwargs) -> torch.Tensor:
+    if value.ndim == 0:
+        return torch.tensor(value.item(), dtype=dtype, device=device)
+    tensor = torch.from_numpy(value)
+    if dtype is not None:
+        tensor = tensor.to(dtype=dtype)
+    if device is not None:
+        tensor = tensor.to(device=device)
+    return tensor
+
+
+@to_tensor.register(int)
+@to_tensor.register(float)
+@to_tensor.register(np.integer)
+@to_tensor.register(np.floating)
+def _(value, *, dtype=torch.float32, device=None, **kwargs) -> torch.Tensor:
+    return torch.tensor(value, dtype=dtype, device=device)
+
+
+@to_tensor.register(list)
+@to_tensor.register(tuple)
+def _(value: Sequence, *, dtype=torch.float32, device=None, **kwargs) -> torch.Tensor:
+    return torch.tensor(value, dtype=dtype, device=device)
+
+
+@to_tensor.register(dict)
+def _(value: dict, *, device=None, **kwargs) -> dict:
+    if not value:
+        return {}
+    result = {}
+    for key, sub_value in value.items():
+        if sub_value is None:
+            continue
+        result[key] = to_tensor(sub_value, device=device, **kwargs)
+    return result
+
+
+def from_tensor_to_numpy(x: torch.Tensor | Any) -> np.ndarray | float | int | Any:
+    """Convert a PyTorch tensor to a numpy array or scalar if applicable."""
+    if isinstance(x, torch.Tensor):
+        return x.item() if x.numel() == 1 else x.detach().cpu().numpy()
+    return x
+
+
+def add_batch_dim(batch: dict[str, Any]) -> dict[str, Any]:
+    """Unsqueeze dim=0 on state/image tensors and wrap a str task as a list."""
+    result = dict(batch)
+
+    for state_key in (OBS_STATE, OBS_ENV_STATE):
+        if state_key in result:
+            val = result[state_key]
+            if isinstance(val, torch.Tensor) and val.dim() == 1:
+                result[state_key] = val.unsqueeze(0)
+
+    if OBS_IMAGE in result:
+        val = result[OBS_IMAGE]
+        if isinstance(val, torch.Tensor) and val.dim() == 3:
+            result[OBS_IMAGE] = val.unsqueeze(0)
+
+    for key, val in list(result.items()):
+        if key.startswith(f"{OBS_IMAGES}.") and isinstance(val, torch.Tensor) and val.dim() == 3:
+            result[key] = val.unsqueeze(0)
+
+    if "action" in result:
+        val = result["action"]
+        if isinstance(val, torch.Tensor) and val.dim() == 1:
+            result["action"] = val.unsqueeze(0)
+
+    if "task" in result and isinstance(result["task"], str):
+        result["task"] = [result["task"]]
+
+    return result
+
+
+def images_to_chw_float(batch: dict[str, Any]) -> dict[str, Any]:
+    """Convert image observations from uint8 HWC to float32 CHW in [0, 1]."""
+    result = dict(batch)
+
+    def _convert(val: torch.Tensor) -> torch.Tensor:
+        if val.dtype == torch.uint8:
+            val = val.float() / 255.0
+        if val.dim() == 3:
+            val = val.permute(2, 0, 1)
+        elif val.dim() == 4:
+            val = val.permute(0, 3, 1, 2)
+        return val
+
+    if OBS_IMAGE in result and isinstance(result[OBS_IMAGE], torch.Tensor):
+        result[OBS_IMAGE] = _convert(result[OBS_IMAGE])
+
+    for key in list(result.keys()):
+        if key.startswith(f"{OBS_IMAGES}.") and isinstance(result[key], torch.Tensor):
+            result[key] = _convert(result[key])
+
+    return result
+
+
+def move_to_device(data: dict[str, Any], device: str | torch.device) -> dict[str, Any]:
+    """Move all tensors in a flat dict to device."""
+    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
 
 
 class ProcessorStep(ABC):
-    """Abstract base class for a single step in a data processing pipeline.
-
-    Subclasses implement `__call__` to transform an `EnvTransition`.
-    Stateful steps can additionally implement `state_dict` and `load_state_dict`
-    to support Hub serialization of learned parameters (e.g. normalization stats).
-    """
+    """Abstract base class for a single step in a data processing pipeline."""
 
     @abstractmethod
-    def __call__(self, transition: EnvTransition) -> EnvTransition:
-        """Transform the transition.
-
-        Args:
-            transition: Input data transition to be processed.
-
-        Returns:
-            The processed transition.
-        """
-        return transition
+    def __call__(self, batch: dict[str, Any]) -> dict[str, Any]:
+        ...
 
     def get_config(self) -> dict[str, Any]:
-        """Return JSON-serializable configuration for checkpoint saving."""
         return {}
 
     def state_dict(self) -> dict[str, torch.Tensor]:
-        """Return the step's state tensors (e.g. normalization statistics)."""
         return {}
 
     def load_state_dict(self, state: dict[str, torch.Tensor]) -> None:
-        """Load state from a state dictionary."""
         return None
 
     def reset(self) -> None:
-        """Reset any internal state."""
         return None
 
 
@@ -96,52 +189,112 @@ class ProcessorMigrationError(Exception):
 
 
 class IdentityProcessorStep(ProcessorStep):
-    """No-op processor step that returns the transition unchanged."""
+    """No-op processor step that returns the batch unchanged.
 
-    def __call__(self, transition: EnvTransition) -> EnvTransition:
-        return transition
+    Accepts and ignores arbitrary kwargs so old checkpoint configs
+    (e.g. ``rename_observations_processor`` with a ``rename_map``) can
+    deserialise without errors.
+    """
+
+    def __init__(self, **kwargs):
+        pass
+
+    def __call__(self, batch: dict[str, Any]) -> dict[str, Any]:
+        return batch
+
+
+@dataclass
+class AddBatchDimStep(ProcessorStep):
+    """Add a batch dimension (size 1) to state/image/action tensors and wrap task strings."""
+
+    _registry_name = "to_batch_processor"
+
+    def __call__(self, batch: dict[str, Any]) -> dict[str, Any]:
+        return add_batch_dim(batch)
+
+
+@dataclass
+class DeviceStep(ProcessorStep):
+    """Move all tensors in a batch dict to a target device and optionally cast dtype."""
+
+    _registry_name = "device_processor"
+
+    device: str = "cpu"
+    float_dtype: str | None = None
+
+    DTYPE_MAPPING = {
+        "float16": torch.float16,
+        "float32": torch.float32,
+        "float64": torch.float64,
+        "bfloat16": torch.bfloat16,
+        "half": torch.float16,
+        "float": torch.float32,
+        "double": torch.float64,
+    }
+
+    def __post_init__(self):
+        self.tensor_device: torch.device = get_safe_torch_device(self.device)
+        self.device = self.tensor_device.type
+        self.non_blocking = "cuda" in str(self.device)
+
+        if self.float_dtype is not None:
+            if self.float_dtype not in self.DTYPE_MAPPING:
+                raise ValueError(
+                    f"Invalid float_dtype '{self.float_dtype}'. "
+                    f"Available options: {list(self.DTYPE_MAPPING.keys())}"
+                )
+            self._target_float_dtype = self.DTYPE_MAPPING[self.float_dtype]
+        else:
+            self._target_float_dtype = None
+
+    def _process_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
+        if tensor.is_cuda and self.tensor_device.type == "cuda":
+            target_device = tensor.device
+        else:
+            target_device = self.tensor_device
+
+        if target_device.type == "mps" and tensor.dtype == torch.float64:
+            tensor = tensor.to(dtype=torch.float32)
+
+        if tensor.device != target_device:
+            tensor = tensor.to(target_device, non_blocking=self.non_blocking)
+
+        if self._target_float_dtype is not None and tensor.is_floating_point():
+            tensor = tensor.to(dtype=self._target_float_dtype)
+
+        return tensor
+
+    def __call__(self, batch: dict[str, Any]) -> dict[str, Any]:
+        return {
+            k: self._process_tensor(v) if isinstance(v, torch.Tensor) else v
+            for k, v in batch.items()
+        }
+
+    def get_config(self) -> dict[str, Any]:
+        return {"device": self.device, "float_dtype": self.float_dtype}
 
 
 @dataclass
 class PolicyProcessorPipeline(HubMixin):
-    """Sequential pipeline for VLA policy pre/post-processing with Hub save/load support.
-
-    Chains `ProcessorStep` instances in order and converts between the caller's
-    data format and the internal `EnvTransition` wire format via `to_transition`
-    and `to_output` callables.
-
-    Typical use:
-        preprocessor, postprocessor = make_pi0_pre_post_processors(config, stats)
-        batch = preprocessor(obs_batch)          # dict[str, Tensor] -> dict[str, Tensor]
-        action_raw = policy.forward(batch)
-        action = postprocessor(action_raw)       # Tensor -> Tensor
-
-    Attributes:
-        steps: The processing steps executed in order.
-        name: Descriptive name (used as filename prefix when saving).
-        to_transition: Converts raw input to EnvTransition (default: batch_to_transition).
-        to_output: Converts final EnvTransition to desired output (default: transition_to_batch).
-    """
+    """Sequential pipeline that chains ProcessorStep instances with Hub save/load."""
 
     steps: Sequence[ProcessorStep] = field(default_factory=list)
     name: str = "PolicyProcessorPipeline"
 
-    to_transition: Callable[[Any], EnvTransition] = field(
-        default_factory=lambda: cast(Callable[[Any], EnvTransition], batch_to_transition), repr=False
-    )
-    to_output: Callable[[EnvTransition], Any] = field(
-        default_factory=lambda: cast(Callable[[EnvTransition], Any], transition_to_batch), repr=False
-    )
+    def __call__(self, data: dict[str, Any] | torch.Tensor) -> dict[str, Any] | torch.Tensor:
+        # Accept a bare tensor (e.g. action) for backward compat with
+        # callers that do ``postprocessor(action_tensor)``.
+        unwrap = False
+        if isinstance(data, torch.Tensor):
+            data = {"action": data}
+            unwrap = True
 
-    def __call__(self, data: Any) -> Any:
-        """Run data through the full pipeline."""
-        transition = self.to_transition(data)
         for step in self.steps:
-            transition = step(transition)
-        return self.to_output(transition)
+            data = step(data)
+
+        return data["action"] if unwrap else data
 
     def __post_init__(self):
-        """Validate that all steps inherit from ProcessorStep."""
         for i, step in enumerate(self.steps):
             if not isinstance(step, ProcessorStep):
                 raise TypeError(f"Step {i} ({type(step).__name__}) must inherit from ProcessorStep")
@@ -151,16 +304,10 @@ class PolicyProcessorPipeline(HubMixin):
 
     def __getitem__(self, idx: int | slice) -> ProcessorStep | PolicyProcessorPipeline:
         if isinstance(idx, slice):
-            return PolicyProcessorPipeline(
-                steps=self.steps[idx],
-                name=self.name,
-                to_transition=self.to_transition,
-                to_output=self.to_output,
-            )
+            return PolicyProcessorPipeline(steps=self.steps[idx], name=self.name)
         return self.steps[idx]
 
     def reset(self):
-        """Reset all stateful steps."""
         for step in self.steps:
             if hasattr(step, "reset"):
                 step.reset()
@@ -170,16 +317,15 @@ class PolicyProcessorPipeline(HubMixin):
         if not step_names:
             steps_repr = "steps=0: []"
         elif len(step_names) <= 3:
-            steps_repr = f"steps={len(step_names)}: [{', '.join(step_names)}]"
+            joiner = ", "
+            steps_repr = f"steps={len(step_names)}: [{joiner.join(step_names)}]"
         else:
             displayed = f"{step_names[0]}, {step_names[1]}, ..., {step_names[-1]}"
             steps_repr = f"steps={len(step_names)}: [{displayed}]"
-        return f"PolicyProcessorPipeline({', '.join([f'name={self.name!r}', steps_repr])})"
-
-    # ---- Hub save / load ----
+        joiner = ", "
+        return f"PolicyProcessorPipeline({joiner.join([f'name={self.name!r}', steps_repr])})"
 
     def _save_pretrained(self, save_directory: Path, **kwargs):
-        """Save pipeline config JSON and per-step state safetensors files."""
         config_filename = kwargs.pop("config_filename", None)
         sanitized_name = re.sub(r"[^a-zA-Z0-9_]", "_", self.name.lower())
         if config_filename is None:
@@ -229,14 +375,6 @@ class PolicyProcessorPipeline(HubMixin):
         config_filename: str | None = None,
         **push_to_hub_kwargs,
     ):
-        """Save pipeline to a directory or push to the Hugging Face Hub.
-
-        Args:
-            save_directory: Directory to save into. Defaults to HF_LEROBOT_HOME/processors/{name}.
-            repo_id: Hub repo ID (only used when push_to_hub=True).
-            push_to_hub: Whether to push to the Hub after saving.
-            config_filename: Override the default JSON filename.
-        """
         if save_directory is None:
             from lerobot.utils.constants import HF_LEROBOT_HOME
 
@@ -274,29 +412,8 @@ class PolicyProcessorPipeline(HubMixin):
         local_files_only: bool = False,
         revision: str | None = None,
         overrides: dict[str, Any] | None = None,
-        to_transition: Callable[[Any], EnvTransition] | None = None,
-        to_output: Callable[[EnvTransition], Any] | None = None,
         **kwargs,
     ) -> PolicyProcessorPipeline:
-        """Load a pipeline from a local directory, file, or Hugging Face Hub.
-
-        Args:
-            pretrained_model_name_or_path: Hub repo ID, local directory, or local file.
-            config_filename: Name of the pipeline JSON config file (always required).
-            overrides: Per-step config overrides keyed by registry name or class name.
-            to_transition: Custom input conversion (default: batch_to_transition).
-            to_output: Custom output conversion (default: transition_to_batch).
-
-        Returns:
-            Loaded PolicyProcessorPipeline instance.
-
-        Raises:
-            FileNotFoundError: If the config file cannot be found.
-            ValueError: If the config format is invalid.
-            ImportError: If a step class cannot be resolved.
-            KeyError: If an override key doesn't match any step.
-            ProcessorMigrationError: If the checkpoint needs migration.
-        """
         model_id = str(pretrained_model_name_or_path)
         hub_kwargs = {
             "force_download": force_download,
@@ -318,17 +435,10 @@ class PolicyProcessorPipeline(HubMixin):
         return cls(
             steps=steps,
             name=loaded_config.get("name", "PolicyProcessorPipeline"),
-            to_transition=to_transition or cast(Callable[[Any], EnvTransition], batch_to_transition),
-            to_output=to_output or cast(Callable[[EnvTransition], Any], transition_to_batch),
         )
 
     @classmethod
-    def _load_config(
-        cls,
-        model_id: str,
-        config_filename: str,
-        hub_kwargs: dict[str, Any],
-    ) -> tuple[dict[str, Any], Path]:
+    def _load_config(cls, model_id, config_filename, hub_kwargs):
         model_path = Path(model_id)
 
         if model_path.is_dir():
@@ -359,9 +469,7 @@ class PolicyProcessorPipeline(HubMixin):
                 ) from e
 
     @classmethod
-    def _validate_loaded_config(
-        cls, model_id: str, loaded_config: dict[str, Any], config_filename: str
-    ) -> None:
+    def _validate_loaded_config(cls, model_id, loaded_config, config_filename):
         if not cls._is_processor_config(loaded_config):
             if Path(model_id).is_dir() and cls._should_suggest_migration(Path(model_id)):
                 cls._suggest_processor_migration(
@@ -374,15 +482,8 @@ class PolicyProcessorPipeline(HubMixin):
             )
 
     @classmethod
-    def _build_steps_with_overrides(
-        cls,
-        loaded_config: dict[str, Any],
-        overrides: dict[str, Any],
-        model_id: str,
-        base_path: Path | None,
-        hub_kwargs: dict[str, Any],
-    ) -> tuple[list[ProcessorStep], set[str]]:
-        steps: list[ProcessorStep] = []
+    def _build_steps_with_overrides(cls, loaded_config, overrides, model_id, base_path, hub_kwargs):
+        steps = []
         override_keys = set(overrides.keys())
 
         for step_entry in loaded_config["steps"]:
@@ -395,7 +496,7 @@ class PolicyProcessorPipeline(HubMixin):
         return steps, override_keys
 
     @classmethod
-    def _resolve_step_class(cls, step_entry: dict[str, Any]) -> tuple[type[ProcessorStep], str]:
+    def _resolve_step_class(cls, step_entry):
         if "registry_name" in step_entry:
             step_map = _build_step_class_map()
             name = step_entry["registry_name"]
@@ -418,13 +519,7 @@ class PolicyProcessorPipeline(HubMixin):
                 ) from e
 
     @classmethod
-    def _instantiate_step(
-        cls,
-        step_entry: dict[str, Any],
-        step_class: type[ProcessorStep],
-        step_key: str,
-        overrides: dict[str, Any],
-    ) -> ProcessorStep:
+    def _instantiate_step(cls, step_entry, step_class, step_key, overrides):
         try:
             saved_cfg = step_entry.get("config", {})
             step_overrides = overrides.get(step_key, {})
@@ -432,20 +527,14 @@ class PolicyProcessorPipeline(HubMixin):
             return step_class(**merged_cfg)
         except Exception as e:
             step_name = step_entry.get("registry_name", step_entry.get("class", "Unknown"))
+            cfg_dict = step_entry.get("config", {})
             raise ValueError(
                 f"Failed to instantiate processor step '{step_name}' "
-                f"with config {step_entry.get('config', {})}: {e}"
+                f"with config {cfg_dict}: {e}"
             ) from e
 
     @classmethod
-    def _load_step_state(
-        cls,
-        step_instance: ProcessorStep,
-        step_entry: dict[str, Any],
-        model_id: str,
-        base_path: Path | None,
-        hub_kwargs: dict[str, Any],
-    ) -> None:
+    def _load_step_state(cls, step_instance, step_entry, model_id, base_path, hub_kwargs):
         if "state_file" not in step_entry or not hasattr(step_instance, "load_state_dict"):
             return
 
@@ -459,9 +548,7 @@ class PolicyProcessorPipeline(HubMixin):
         step_instance.load_state_dict(load_file(state_path))
 
     @classmethod
-    def _validate_overrides_used(
-        cls, remaining_override_keys: set[str], loaded_config: dict[str, Any]
-    ) -> None:
+    def _validate_overrides_used(cls, remaining_override_keys, loaded_config):
         if not remaining_override_keys:
             return
         available_keys = [
@@ -474,7 +561,7 @@ class PolicyProcessorPipeline(HubMixin):
         )
 
     @classmethod
-    def _should_suggest_migration(cls, model_path: Path) -> bool:
+    def _should_suggest_migration(cls, model_path):
         json_files = list(model_path.glob("*.json"))
         if not json_files:
             return False
@@ -489,7 +576,7 @@ class PolicyProcessorPipeline(HubMixin):
         return True
 
     @classmethod
-    def _is_processor_config(cls, config: dict) -> bool:
+    def _is_processor_config(cls, config):
         if not isinstance(config.get("steps"), list):
             return False
         steps = config["steps"]
@@ -503,7 +590,7 @@ class PolicyProcessorPipeline(HubMixin):
         return True
 
     @classmethod
-    def _suggest_processor_migration(cls, model_path: str | Path, original_error: str) -> None:
+    def _suggest_processor_migration(cls, model_path, original_error):
         migration_command = (
             f"python src/lerobot/processor/migrate_policy_normalization.py "
             f"--pretrained-path {model_path}"
@@ -511,43 +598,25 @@ class PolicyProcessorPipeline(HubMixin):
         raise ProcessorMigrationError(model_path, migration_command, original_error)
 
 
-def _build_step_class_map() -> dict[str, type]:
-    """Explicit class map for checkpoint deserialization.
-
-    This replaces the old ProcessorStepRegistry. All known step classes are listed
-    here by their serialization name (the ``_registry_name`` class attribute).
-    To add a new step, append its entry here.
-    """
-    from lerobot.processor.batch_processor import AddBatchDimensionProcessorStep
-    from lerobot.processor.device_processor import DeviceProcessorStep
+def _build_step_class_map():
+    """Map serialisation names to step classes for checkpoint loading."""
     from lerobot.processor.normalize_processor import NormalizerProcessorStep, UnnormalizerProcessorStep
-    from lerobot.processor.rename_processor import RenameObservationsProcessorStep
     from lerobot.processor.tokenizer_processor import ActionTokenizerProcessorStep, TokenizerProcessorStep
     from lerobot.policies.pi0.processor_pi0 import Pi0NewLineProcessor
     from lerobot.policies.pi0_fast.processor_pi0_fast import (
         Pi0FastPrepareStateAndLanguageTokenizerProcessorStep,
     )
     from lerobot.policies.pi05.processor_pi05 import Pi05PrepareStateTokenizerProcessorStep
-    from lerobot.policies.groot.processor_groot import (
-        GrootActionUnpackUnnormalizeStep,
-        GrootEagleCollateStep,
-        GrootEagleEncodeStep,
-        GrootPackInputsStep,
-    )
 
     return {
         "normalizer_processor": NormalizerProcessorStep,
         "unnormalizer_processor": UnnormalizerProcessorStep,
-        "to_batch_processor": AddBatchDimensionProcessorStep,
-        "device_processor": DeviceProcessorStep,
+        "to_batch_processor": AddBatchDimStep,
+        "device_processor": DeviceStep,
         "tokenizer_processor": TokenizerProcessorStep,
         "action_tokenizer_processor": ActionTokenizerProcessorStep,
-        "rename_observations_processor": RenameObservationsProcessorStep,
+        "rename_observations_processor": IdentityProcessorStep,
         "pi0_new_line_processor": Pi0NewLineProcessor,
         "pi0_fast_prepare_state_tokenizer_processor_step": Pi0FastPrepareStateAndLanguageTokenizerProcessorStep,
         "pi05_prepare_state_tokenizer_processor_step": Pi05PrepareStateTokenizerProcessorStep,
-        "groot_pack_inputs_v3": GrootPackInputsStep,
-        "groot_eagle_encode_v3": GrootEagleEncodeStep,
-        "groot_eagle_collate_v3": GrootEagleCollateStep,
-        "groot_action_unpack_unnormalize_v1": GrootActionUnpackUnnormalizeStep,
     }

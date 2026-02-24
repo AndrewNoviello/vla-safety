@@ -1,18 +1,4 @@
-#!/usr/bin/env python
-
-# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""Normalization / unnormalization processor steps with statistics management."""
 
 from __future__ import annotations
 
@@ -26,30 +12,15 @@ from torch import Tensor
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.utils.constants import ACTION
 
-from .converters import from_tensor_to_numpy, to_tensor
-from .core import EnvTransition, PolicyAction, TransitionKey
-from .pipeline import PolicyProcessorPipeline, ProcessorStep
+from .pipeline import PolicyProcessorPipeline, ProcessorStep, from_tensor_to_numpy, to_tensor
 
 
 @dataclass
 class _NormalizationMixin:
-    """Mixin providing core normalization/unnormalization logic for processor steps.
+    """Mixin providing core normalization/unnormalization logic.
 
-    Manages normalization statistics, converts them to tensors for efficient computation,
-    and applies MEAN_STD or MIN_MAX normalization.
-
-    **Stats Override Preservation:**
-    When stats are explicitly provided during construction (e.g., via overrides in
-    ``PolicyProcessorPipeline.from_pretrained()``), they are preserved even when
-    ``load_state_dict()`` is called. This lets users override stats from a saved checkpoint.
-
-    Attributes:
-        features: Mapping of feature names to PolicyFeature objects.
-        norm_map: Mapping from FeatureType to NormalizationMode.
-        stats: Normalization statistics (mean, std, min, max) per feature key.
-        device: PyTorch device for tensor operations.
-        eps: Small value for numerical stability.
-        normalize_observation_keys: If set, only normalize these observation keys.
+    When stats are explicitly provided during construction they are preserved even
+    when ``load_state_dict()`` is called (checkpoint-override workflow).
     """
 
     features: dict[str, PolicyFeature]
@@ -66,7 +37,6 @@ class _NormalizationMixin:
     def __post_init__(self):
         self._stats_explicitly_provided = self.stats is not None and bool(self.stats)
 
-        # Robust JSON deserialization: enums may come back as strings.
         if self.features:
             first_val = next(iter(self.features.values()))
             if isinstance(first_val, dict):
@@ -90,7 +60,6 @@ class _NormalizationMixin:
     def to(
         self, device: torch.device | str | None = None, dtype: torch.dtype | None = None
     ) -> _NormalizationMixin:
-        """Move normalization stats to the specified device/dtype."""
         if device is not None:
             self.device = device
         if dtype is not None:
@@ -99,7 +68,6 @@ class _NormalizationMixin:
         return self
 
     def state_dict(self) -> dict[str, Tensor]:
-        """Return normalization statistics as a flat CPU state dictionary."""
         flat: dict[str, Tensor] = {}
         for key, sub in self._tensor_stats.items():
             for stat_name, tensor in sub.items():
@@ -107,11 +75,6 @@ class _NormalizationMixin:
         return flat
 
     def load_state_dict(self, state: dict[str, Tensor]) -> None:
-        """Load normalization statistics from a state dictionary.
-
-        If stats were explicitly provided during construction, they are preserved
-        and this call is a no-op (supporting checkpoint-override workflows).
-        """
         if self._stats_explicitly_provided and self.stats is not None:
             self._tensor_stats = to_tensor(self.stats, device=self.device, dtype=self.dtype)
             return
@@ -131,8 +94,7 @@ class _NormalizationMixin:
             }
 
     def get_config(self) -> dict[str, Any]:
-        """Return a JSON-serializable configuration dictionary."""
-        config = {
+        config: dict[str, Any] = {
             "eps": self.eps,
             "features": {
                 key: {"type": ft.type.value, "shape": ft.shape} for key, ft in self.features.items()
@@ -143,43 +105,23 @@ class _NormalizationMixin:
             config["normalize_observation_keys"] = sorted(self.normalize_observation_keys)
         return config
 
-    def _normalize_observation(self, observation: dict, inverse: bool) -> dict[str, Tensor]:
-        """Apply (un)normalization to relevant features in an observation dict."""
-        new_observation = dict(observation)
+    def _normalize_batch_observations(self, batch: dict[str, Any], inverse: bool) -> dict[str, Any]:
+        """Apply (un)normalization to observation keys in a flat batch dict."""
+        result = dict(batch)
         for key, feature in self.features.items():
             if self.normalize_observation_keys is not None and key not in self.normalize_observation_keys:
                 continue
-            if feature.type != FeatureType.ACTION and key in new_observation:
-                tensor = torch.as_tensor(new_observation[key])
-                new_observation[key] = self._apply_transform(tensor, key, feature.type, inverse=inverse)
-        return new_observation
+            if feature.type != FeatureType.ACTION and key in result:
+                tensor = torch.as_tensor(result[key])
+                result[key] = self._apply_transform(tensor, key, feature.type, inverse=inverse)
+        return result
 
     def _normalize_action(self, action: Tensor, inverse: bool) -> Tensor:
-        """Apply (un)normalization to an action tensor."""
         return self._apply_transform(action, ACTION, FeatureType.ACTION, inverse=inverse)
 
     def _apply_transform(
         self, tensor: Tensor, key: str, feature_type: FeatureType, *, inverse: bool = False
     ) -> Tensor:
-        """Apply normalization or unnormalization to a tensor.
-
-        Supported modes:
-          - IDENTITY: pass through unchanged.
-          - MEAN_STD: center/scale with mean and std.
-          - MIN_MAX: scale to [-1, 1] using min/max.
-
-        Args:
-            tensor: Input tensor.
-            key: Feature key (for looking up stats).
-            feature_type: FeatureType of the tensor.
-            inverse: If True, apply inverse (unnormalization).
-
-        Returns:
-            Transformed tensor.
-
-        Raises:
-            ValueError: If normalization mode is unsupported or required stats are missing.
-        """
         norm_mode = self.norm_map.get(feature_type, NormalizationMode.IDENTITY)
         if norm_mode == NormalizationMode.IDENTITY or key not in self._tensor_stats:
             return tensor
@@ -190,8 +132,7 @@ class _NormalizationMixin:
                 f"Supported modes: IDENTITY, MEAN_STD, MIN_MAX."
             )
 
-        # Ensure stats are on the same device and dtype as the input tensor.
-        if self._tensor_stats and key in self._tensor_stats:
+        if key in self._tensor_stats:
             first_stat = next(iter(self._tensor_stats[key].values()))
             if first_stat.device != tensor.device or first_stat.dtype != tensor.dtype:
                 self.to(device=tensor.device, dtype=tensor.dtype)
@@ -202,10 +143,7 @@ class _NormalizationMixin:
             mean = stats.get("mean")
             std = stats.get("std")
             if mean is None or std is None:
-                raise ValueError(
-                    "MEAN_STD normalization requires 'mean' and 'std' stats. "
-                    "Ensure the dataset stats are correctly computed."
-                )
+                raise ValueError("MEAN_STD normalization requires 'mean' and 'std' stats.")
             if inverse:
                 return tensor * std + mean
             return (tensor - mean) / (std + self.eps)
@@ -214,10 +152,7 @@ class _NormalizationMixin:
             min_val = stats.get("min")
             max_val = stats.get("max")
             if min_val is None or max_val is None:
-                raise ValueError(
-                    "MIN_MAX normalization requires 'min' and 'max' stats. "
-                    "Ensure the dataset stats are correctly computed."
-                )
+                raise ValueError("MIN_MAX normalization requires 'min' and 'max' stats.")
             denom = max_val - min_val
             denom = torch.where(
                 denom == 0,
@@ -233,77 +168,46 @@ class _NormalizationMixin:
 
 @dataclass
 class NormalizerProcessorStep(_NormalizationMixin, ProcessorStep):
-    """Processor step that normalizes observations and actions in a transition.
-
-    Uses MEAN_STD or MIN_MAX normalization. Typically placed in the pre-processing
-    pipeline before feeding data to a policy.
-    """
+    """Normalizes observation and action keys in a batch dict."""
 
     _registry_name = "normalizer_processor"
 
-    def __call__(self, transition: EnvTransition) -> EnvTransition:
-        new_transition = transition.copy()
+    def __call__(self, batch: dict[str, Any]) -> dict[str, Any]:
+        batch = self._normalize_batch_observations(batch, inverse=False)
 
-        observation = new_transition.get(TransitionKey.OBSERVATION)
-        if observation is not None:
-            new_transition[TransitionKey.OBSERVATION] = self._normalize_observation(
-                observation, inverse=False
-            )
+        action = batch.get(ACTION)
+        if action is not None:
+            if not isinstance(action, torch.Tensor):
+                raise ValueError(f"Action should be a torch.Tensor, got {type(action)}")
+            batch = dict(batch)
+            batch[ACTION] = self._normalize_action(action, inverse=False)
 
-        action = new_transition.get(TransitionKey.ACTION)
-        if action is None:
-            return new_transition
-        if not isinstance(action, PolicyAction):
-            raise ValueError(f"Action should be a PolicyAction type got {type(action)}")
-        new_transition[TransitionKey.ACTION] = self._normalize_action(action, inverse=False)
-        return new_transition
+        return batch
 
 
 @dataclass
 class UnnormalizerProcessorStep(_NormalizationMixin, ProcessorStep):
-    """Processor step that unnormalizes observations and actions.
-
-    Inverts the normalization applied by NormalizerProcessorStep. Typically placed in
-    the post-processing pipeline to convert a policy's normalized output back to the
-    original data scale.
-    """
+    """Unnormalizes observation and action keys in a batch dict (inverse of NormalizerProcessorStep)."""
 
     _registry_name = "unnormalizer_processor"
 
-    def __call__(self, transition: EnvTransition) -> EnvTransition:
-        new_transition = transition.copy()
+    def __call__(self, batch: dict[str, Any]) -> dict[str, Any]:
+        batch = self._normalize_batch_observations(batch, inverse=True)
 
-        observation = new_transition.get(TransitionKey.OBSERVATION)
-        if observation is not None:
-            new_transition[TransitionKey.OBSERVATION] = self._normalize_observation(
-                observation, inverse=True
-            )
+        action = batch.get(ACTION)
+        if action is not None:
+            if not isinstance(action, torch.Tensor):
+                raise ValueError(f"Action should be a torch.Tensor, got {type(action)}")
+            batch = dict(batch)
+            batch[ACTION] = self._normalize_action(action, inverse=True)
 
-        action = new_transition.get(TransitionKey.ACTION)
-        if action is None:
-            return new_transition
-        if not isinstance(action, PolicyAction):
-            raise ValueError(f"Action should be a PolicyAction type got {type(action)}")
-        new_transition[TransitionKey.ACTION] = self._normalize_action(action, inverse=True)
-        return new_transition
+        return batch
 
 
 def hotswap_stats(
     policy_processor: PolicyProcessorPipeline, stats: dict[str, dict[str, Any]]
 ) -> PolicyProcessorPipeline:
-    """Replace normalization statistics in a PolicyProcessorPipeline.
-
-    Creates a deep copy of the pipeline and updates stats on all normalization steps.
-    Useful for adapting a pretrained policy to a different dataset without rebuilding
-    the full pipeline.
-
-    Args:
-        policy_processor: The pipeline to modify.
-        stats: New normalization statistics to apply.
-
-    Returns:
-        A new PolicyProcessorPipeline with updated statistics.
-    """
+    """Replace normalization statistics in a pipeline (returns a deep copy)."""
     rp = deepcopy(policy_processor)
     for step in rp.steps:
         if isinstance(step, _NormalizationMixin):

@@ -22,7 +22,6 @@ from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.utils import load_json, write_json
 from lerobot.optim import load_optimizer_state, load_scheduler_state, save_optimizer_state, save_scheduler_state
 from lerobot.policies.pretrained import PreTrainedPolicy
-from lerobot.processor import PolicyProcessorPipeline
 from lerobot.utils.constants import (
     CHECKPOINTS_DIR,
     LAST_CHECKPOINT_LINK,
@@ -68,44 +67,13 @@ def save_checkpoint(
     policy: PreTrainedPolicy,
     optimizer: Optimizer,
     scheduler: LRScheduler | None = None,
-    preprocessor: PolicyProcessorPipeline | None = None,
-    postprocessor: PolicyProcessorPipeline | None = None,
 ) -> None:
-    """This function creates the following directory structure:
-
-    005000/  #  training step at checkpoint
-    ├── pretrained_model/
-    │   ├── config.json  # policy config
-    │   ├── model.safetensors  # policy weights
-    │   ├── train_config.json  # train config
-    │   ├── processor.json  # processor config (if preprocessor provided)
-    │   └── step_*.safetensors  # processor state files (if any)
-    └── training_state/
-        ├── optimizer_param_groups.json  #  optimizer param groups
-        ├── optimizer_state.safetensors  # optimizer state
-        ├── rng_state.safetensors  # rng states
-        ├── scheduler_state.json  # scheduler state
-        └── training_step.json  # training step
-
-    Args:
-        cfg (TrainPipelineConfig): The training config used for this run.
-        step (int): The training step at that checkpoint.
-        policy (PreTrainedPolicy): The policy to save.
-        optimizer (Optimizer | None, optional): The optimizer to save the state from. Defaults to None.
-        scheduler (LRScheduler | None, optional): The scheduler to save the state from. Defaults to None.
-        preprocessor: The preprocessor/pipeline to save. Defaults to None.
-    """
+    """Save policy weights, training config, and optimizer/scheduler state."""
     pretrained_dir = checkpoint_dir / PRETRAINED_MODEL_DIR
     policy.save_pretrained(pretrained_dir)
     cfg.save_pretrained(pretrained_dir)
     if cfg.peft is not None:
-        # When using PEFT, policy.save_pretrained will only write the adapter weights + config, not the
-        # policy config which we need for loading the model. In this case we'll write it ourselves.
         policy.config.save_pretrained(pretrained_dir)
-    if preprocessor is not None:
-        preprocessor.save_pretrained(pretrained_dir)
-    if postprocessor is not None:
-        postprocessor.save_pretrained(pretrained_dir)
     save_training_state(checkpoint_dir, step, optimizer, scheduler)
 
 
