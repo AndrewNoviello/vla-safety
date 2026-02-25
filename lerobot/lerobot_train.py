@@ -38,11 +38,13 @@ from torch.optim import Optimizer
 
 from lerobot.configs.types import FeatureType, NormalizationMode
 from lerobot.datasets.lerobot_dataset import load_dataset
-from lerobot.datasets.transforms import image_transforms
+from lerobot.datasets.augmentation import image_transforms
 from lerobot.datasets.utils import cycle, resolve_delta_timestamps
 from lerobot.optim import make_optimizer_and_scheduler
 from lerobot.policies.factory import make_policy
+from lerobot.policies.pi0.processor_pi0 import _ensure_newline
 from lerobot.policies.pretrained import PreTrainedPolicy
+from lerobot.processor.tokenizer_processor import TextTokenizer
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.processing import normalize, to_device
 from lerobot.utils.random_utils import set_seed
@@ -63,7 +65,7 @@ from lerobot.utils.wandb_utils import WandBLogger
 # Configuration -- edit these values for your experiment
 # =====================================================================
 
-DATASET_REPO_ID = "lerobot/pusht"
+DATASET_REPO_ID = "lerobot/aloha_sim_insertion_scripted"
 DATASET_ROOT = None
 DATASET_EPISODES = None
 
@@ -72,11 +74,11 @@ POLICY_TYPE = "pi0"
 PRETRAINED_PATH = None
 PUSH_TO_HUB = False
 
-STEPS = 100_000
-BATCH_SIZE = 8
-NUM_WORKERS = 4
+STEPS = 10
+BATCH_SIZE = 1
+NUM_WORKERS = 0
 SEED = 1000
-LOG_FREQ = 200
+LOG_FREQ = 10
 SAVE_CHECKPOINT = True
 SAVE_FREQ = 20_000
 TOLERANCE_S = 1e-4
@@ -308,10 +310,19 @@ def train():
     all_features = {**policy.input_features, **policy.output_features}
     norm_map = PI0_NORM_MAP
 
+    tokenizer = TextTokenizer(
+        tokenizer_name="google/paligemma-3b-pt-224",
+        max_length=48,
+        padding_side="right",
+        padding="max_length",
+    )
+
     for _ in range(step, STEPS):
         start_time = time.perf_counter()
         batch = next(dl_iter)
         batch = normalize(batch, dataset.stats, all_features, norm_map)
+        batch = _ensure_newline(batch)
+        batch = tokenizer(batch)
         batch = to_device(batch, device)
         train_tracker.dataloading_s = time.perf_counter() - start_time
 

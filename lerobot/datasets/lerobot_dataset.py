@@ -106,6 +106,23 @@ class LeRobotDataset(torch.utils.data.Dataset):
             )
             self.hf_dataset = self._load_hf_dataset()
 
+        # --- download video files if needed ---
+        video_keys = [key for key, ft in self.features.items() if ft["dtype"] == "video"]
+        if video_keys:
+            for key in video_keys:
+                video_dir = self.root / "videos" / key
+                if not any(video_dir.rglob("*.mp4")):
+                    if is_valid_version(revision):
+                        revision = get_safe_version(self.repo_id, revision)
+                    snapshot_download(
+                        self.repo_id,
+                        repo_type="dataset",
+                        revision=revision,
+                        local_dir=self.root,
+                        allow_patterns=f"videos/{key}/",
+                    )
+                    break  # single download covers all video keys
+
         # absolute -> relative index mapping for episode subsets
         self._absolute_to_relative_idx = None
         if self.episodes is not None:
@@ -280,6 +297,41 @@ class LeRobotDataset(torch.utils.data.Dataset):
         fpaths = list({str(self._get_data_file_path(ep_idx)) for ep_idx in episodes})
         return fpaths
 
+    def _get_video_path(self, ep_idx: int, key: str) -> Path:
+        ep = self._episodes[ep_idx]
+        chunk_idx = ep[f"videos/{key}/chunk_index"]
+        file_idx = ep[f"videos/{key}/file_index"]
+        video_path_template = self._info.get(
+            "video_path", "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4"
+        )
+        path = video_path_template.format(video_key=key, chunk_index=chunk_idx, file_index=file_idx)
+        return self.root / path
+
+    @staticmethod
+    def _decode_video_frame(video_path: Path, timestamp: float) -> torch.Tensor:
+        """Decode the frame nearest to `timestamp` (seconds) from an mp4 file."""
+        import av
+
+        with av.open(str(video_path)) as container:
+            stream = container.streams.video[0]
+            tb = float(stream.time_base)
+            seek_pts = int(max(0.0, timestamp - 0.1) / tb)
+            container.seek(seek_pts, stream=stream, backward=True, any_frame=False)
+            best_frame = None
+            best_diff = float("inf")
+            for frame in container.decode(stream):
+                frame_ts = float(frame.pts * tb)
+                diff = abs(frame_ts - timestamp)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_frame = frame
+                if frame_ts > timestamp + 0.5:
+                    break
+        if best_frame is None:
+            raise ValueError(f"Could not find frame at timestamp {timestamp} in {video_path}")
+        img = best_frame.to_ndarray(format="rgb24")  # (H, W, C) uint8
+        return torch.from_numpy(img).permute(2, 0, 1).float() / 255.0  # (C, H, W) float [0,1]
+
     def _load_hf_dataset(self) -> datasets.Dataset:
         hf_features = get_hf_features_from_features(self.features)
         hf_dataset = load_nested_dataset(self.root / "data", features=hf_features, episodes=self.episodes)
@@ -356,6 +408,17 @@ class LeRobotDataset(torch.utils.data.Dataset):
             item = {**item, **padding}
             for key, val in query_result.items():
                 item[key] = val
+
+        # Decode video frames for video-dtype features
+        video_keys = [key for key, ft in self.features.items() if ft["dtype"] == "video"]
+        if video_keys:
+            ep = self._episodes[ep_idx]
+            timestamp = item["timestamp"].item()
+            for key in video_keys:
+                from_ts = ep[f"videos/{key}/from_timestamp"]
+                abs_timestamp = from_ts + timestamp
+                video_path = self._get_video_path(ep_idx, key)
+                item[key] = self._decode_video_frame(video_path, abs_timestamp)
 
         if self.image_transforms is not None:
             for cam in self.camera_keys:
