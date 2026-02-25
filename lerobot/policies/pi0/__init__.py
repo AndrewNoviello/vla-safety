@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .configuration_pi0 import PI0Config
 from .modeling_pi0 import PI0Policy
 from .processor_pi0 import make_pi0_pre_post_processors
 from .pi0_constants import (
@@ -25,6 +26,7 @@ from .pi0_constants import (
 )
 
 __all__ = [
+    "PI0Config",
     "PI0Policy",
     "make_pi0_pre_post_processors",
     "PI0_DEFAULT_CHUNK_SIZE",

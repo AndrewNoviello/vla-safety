@@ -42,7 +42,9 @@ else:
 
 from dataclasses import dataclass
 
+from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, PolicyFeature
+from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.pi0.pi0_constants import (
     DEFAULT_IMAGE_SIZE,
     PI0_DEFAULT_ACTION_EXPERT,
@@ -978,138 +980,86 @@ class PI0Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 class PI0Policy(PreTrainedPolicy):
     """PI0 OpenPI Policy for LeRobot."""
 
+    config_class = PI0Config
     name = "pi0"
 
-    def __init__(
-        self,
-        input_features: dict[str, PolicyFeature],
-        output_features: dict[str, PolicyFeature],
-        paligemma_variant: str = PI0_DEFAULT_PALIGEMMA,
-        action_expert_variant: str = PI0_DEFAULT_ACTION_EXPERT,
-        chunk_size: int = PI0_DEFAULT_CHUNK_SIZE,
-        n_action_steps: int = PI0_DEFAULT_N_ACTION_STEPS,
-        max_state_dim: int = PI0_DEFAULT_MAX_STATE_DIM,
-        max_action_dim: int = PI0_DEFAULT_MAX_ACTION_DIM,
-        image_resolution: tuple[int, int] = PI0_DEFAULT_IMAGE_RESOLUTION,
-        dtype: str = PI0_DEFAULT_DTYPE,
-        num_inference_steps: int = PI0_DEFAULT_NUM_INFERENCE_STEPS,
-        time_sampling_beta_alpha: float = PI0_DEFAULT_TIME_SAMPLING_BETA_ALPHA,
-        time_sampling_beta_beta: float = PI0_DEFAULT_TIME_SAMPLING_BETA_BETA,
-        time_sampling_scale: float = PI0_DEFAULT_TIME_SAMPLING_SCALE,
-        time_sampling_offset: float = PI0_DEFAULT_TIME_SAMPLING_OFFSET,
-        min_period: float = PI0_DEFAULT_MIN_PERIOD,
-        max_period: float = PI0_DEFAULT_MAX_PERIOD,
-        gradient_checkpointing: bool = PI0_DEFAULT_GRADIENT_CHECKPOINTING,
-        compile_model: bool = PI0_DEFAULT_COMPILE_MODEL,
-        compile_mode: str = PI0_DEFAULT_COMPILE_MODE,
-        freeze_vision_encoder: bool = PI0_DEFAULT_FREEZE_VISION_ENCODER,
-        train_expert_only: bool = PI0_DEFAULT_TRAIN_EXPERT_ONLY,
-        device: str | None = None,
-        rtc_config=None,
-        pretrained_path: str | Path | None = None,
-        dataset_stats: dict | None = None,
-        dataset_meta=None,
-        **kwargs,
-    ):
-        super().__init__()
-        self.input_features = dict(input_features)
-        self.output_features = dict(output_features)
-        self.paligemma_variant = paligemma_variant
-        self.action_expert_variant = action_expert_variant
-        self.chunk_size = chunk_size
-        self.n_action_steps = n_action_steps
-        self.max_state_dim = max_state_dim
-        self.max_action_dim = max_action_dim
-        self.image_resolution = image_resolution
-        self.dtype = dtype
-        self.num_inference_steps = num_inference_steps
-        self.time_sampling_beta_alpha = time_sampling_beta_alpha
-        self.time_sampling_beta_beta = time_sampling_beta_beta
-        self.time_sampling_scale = time_sampling_scale
-        self.time_sampling_offset = time_sampling_offset
-        self.min_period = min_period
-        self.max_period = max_period
-        self.gradient_checkpointing = gradient_checkpointing
-        self.compile_model = compile_model
-        self.compile_mode = compile_mode
-        self.freeze_vision_encoder = freeze_vision_encoder
-        self.train_expert_only = train_expert_only
-        self._device = device
-        self.rtc_config = rtc_config
-        self.pretrained_path = pretrained_path
-        self.dataset_stats = dataset_stats
-        self.dataset_meta = dataset_meta
+    def __init__(self, config: PI0Config, **kwargs):
+        super().__init__(config)
+        config.validate_features()
 
         # Build arch params for PI0Pytorch
         params = PI0ArchParams(
-            paligemma_variant=paligemma_variant,
-            action_expert_variant=action_expert_variant,
-            dtype=dtype,
-            chunk_size=chunk_size,
-            n_action_steps=n_action_steps,
-            max_state_dim=max_state_dim,
-            max_action_dim=max_action_dim,
-            image_resolution=image_resolution,
-            num_inference_steps=num_inference_steps,
-            time_sampling_beta_alpha=time_sampling_beta_alpha,
-            time_sampling_beta_beta=time_sampling_beta_beta,
-            time_sampling_scale=time_sampling_scale,
-            time_sampling_offset=time_sampling_offset,
-            min_period=min_period,
-            max_period=max_period,
-            gradient_checkpointing=gradient_checkpointing,
-            compile_model=compile_model,
-            compile_mode=compile_mode,
-            freeze_vision_encoder=freeze_vision_encoder,
-            train_expert_only=train_expert_only,
-            rtc_config=rtc_config,
+            paligemma_variant=config.paligemma_variant,
+            action_expert_variant=config.action_expert_variant,
+            dtype=config.dtype,
+            chunk_size=config.chunk_size,
+            n_action_steps=config.n_action_steps,
+            max_state_dim=config.max_state_dim,
+            max_action_dim=config.max_action_dim,
+            image_resolution=config.image_resolution,
+            num_inference_steps=config.num_inference_steps,
+            time_sampling_beta_alpha=config.time_sampling_beta_alpha,
+            time_sampling_beta_beta=config.time_sampling_beta_beta,
+            time_sampling_scale=config.time_sampling_scale,
+            time_sampling_offset=config.time_sampling_offset,
+            min_period=config.min_period,
+            max_period=config.max_period,
+            gradient_checkpointing=config.gradient_checkpointing,
+            compile_model=config.compile_model,
+            compile_mode=config.compile_mode,
+            freeze_vision_encoder=config.freeze_vision_encoder,
+            train_expert_only=config.train_expert_only,
+            rtc_config=config.rtc_config,
         )
 
         self.init_rtc_processor()
         self.model = PI0Pytorch(params, rtc_processor=self.rtc_processor)
 
-        if gradient_checkpointing:
+        if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
 
-        resolved_device = self._resolve_device()
-        self.model.to(resolved_device)
-
-        # Minimal config-like object for base class methods (push_model_to_hub, wrap_with_peft, etc.)
-        self.config = type("PI0ConfigCompat", (), {
-            "type": "pi0",
-            "repo_id": None,
-            "private": None,
-            "license": "apache-2.0",
-            "tags": None,
-            "device": resolved_device,
-            "pretrained_path": pretrained_path,
-            "use_peft": False,
-            "input_features": self.input_features,
-            "output_features": self.output_features,
-        })()
+        self.model.to(config.device)
 
         self.reset()
 
-    def _resolve_device(self) -> str:
-        """Resolve device string, auto-selecting if None."""
-        from lerobot.utils.utils import auto_select_torch_device, is_torch_device_available
+    def init_rtc_processor(self):
+        """Initialize RTC processor if RTC is enabled."""
+        self.rtc_processor = None
+        rtc_config = getattr(self.config, "rtc_config", None)
+        if rtc_config is not None:
+            self.rtc_processor = RTCProcessor(rtc_config)
 
-        if self._device and is_torch_device_available(self._device):
-            return self._device
-        return auto_select_torch_device().type
+            model_value = getattr(self, "model", None)
+            if model_value is not None:
+                model_value.rtc_processor = self.rtc_processor
 
     @property
     def image_features(self) -> dict[str, PolicyFeature]:
-        """Visual input features from input_features."""
-        return {k: ft for k, ft in self.input_features.items() if ft.type is FeatureType.VISUAL}
+        """Visual input features from config."""
+        return self.config.image_features
+
+    @property
+    def image_resolution(self) -> tuple[int, int]:
+        return self.config.image_resolution
+
+    @property
+    def max_state_dim(self) -> int:
+        return self.config.max_state_dim
+
+    @property
+    def max_action_dim(self) -> int:
+        return self.config.max_action_dim
+
+    @property
+    def n_action_steps(self) -> int:
+        return self.config.n_action_steps
 
     @classmethod
     def from_pretrained(
         cls: builtins.type[T],
         pretrained_name_or_path: str | Path,
         *,
-        input_features: dict[str, PolicyFeature] | None = None,
-        output_features: dict[str, PolicyFeature] | None = None,
+        config: PreTrainedConfig | None = None,
         force_download: bool = False,
         resume_download: bool | None = None,
         proxies: dict | None = None,
@@ -1129,35 +1079,46 @@ class PI0Policy(PreTrainedPolicy):
         if pretrained_name_or_path is None:
             raise ValueError("pretrained_name_or_path is required")
 
-        # Build default features if not provided (for lerobot/pi0_base)
-        if input_features is None or output_features is None:
-            input_features = input_features or {}
-            output_features = output_features or {}
-            if OBS_STATE not in input_features:
-                input_features[OBS_STATE] = PolicyFeature(
-                    type=FeatureType.STATE,
-                    shape=(PI0_DEFAULT_MAX_STATE_DIM,),
+        # Load config: use provided config, or load from checkpoint, or build default for old checkpoints
+        if config is None:
+            try:
+                config = PI0Config.from_pretrained(
+                    pretrained_name_or_path=pretrained_name_or_path,
+                    force_download=force_download,
+                    resume_download=resume_download,
+                    proxies=proxies,
+                    token=token,
+                    cache_dir=cache_dir,
+                    local_files_only=local_files_only,
+                    revision=revision,
+                    **kwargs,
                 )
-            if ACTION not in output_features:
-                output_features[ACTION] = PolicyFeature(
-                    type=FeatureType.ACTION,
-                    shape=(PI0_DEFAULT_MAX_ACTION_DIM,),
-                )
-            # Add default image feature if not present
-            if not any(ft.type == FeatureType.VISUAL for ft in input_features.values()):
-                input_features[f"{OBS_IMAGES}.top"] = PolicyFeature(
-                    type=FeatureType.VISUAL,
-                    shape=(3, *PI0_DEFAULT_IMAGE_RESOLUTION),
+            except FileNotFoundError:
+                # Old checkpoints without config.json: build default PI0Config
+                input_features = kwargs.get("input_features") or {}
+                output_features = kwargs.get("output_features") or {}
+                if OBS_STATE not in input_features:
+                    input_features[OBS_STATE] = PolicyFeature(
+                        type=FeatureType.STATE,
+                        shape=(PI0_DEFAULT_MAX_STATE_DIM,),
+                    )
+                if ACTION not in output_features:
+                    output_features[ACTION] = PolicyFeature(
+                        type=FeatureType.ACTION,
+                        shape=(PI0_DEFAULT_MAX_ACTION_DIM,),
+                    )
+                if not any(ft.type == FeatureType.VISUAL for ft in input_features.values()):
+                    input_features[f"{OBS_IMAGES}.top"] = PolicyFeature(
+                        type=FeatureType.VISUAL,
+                        shape=(3, *PI0_DEFAULT_IMAGE_RESOLUTION),
+                    )
+                config = PI0Config(
+                    input_features=input_features,
+                    output_features=output_features,
+                    pretrained_path=Path(pretrained_name_or_path),
                 )
 
-        model = cls(
-            input_features=input_features,
-            output_features=output_features,
-            pretrained_path=str(pretrained_name_or_path),
-            dataset_stats=kwargs.get("dataset_stats"),
-            dataset_meta=kwargs.get("dataset_meta"),
-            **kwargs,
-        )
+        model = cls(config, **kwargs)
 
         # Now manually load and remap the state dict
         try:
@@ -1291,19 +1252,9 @@ class PI0Policy(PreTrainedPolicy):
             ACTION: deque(maxlen=self.n_action_steps),
         }
 
-    def init_rtc_processor(self):
-        """Initialize RTC processor if RTC is enabled."""
-        self.rtc_processor = None
-
-        if self.rtc_config is not None:
-            self.rtc_processor = RTCProcessor(self.rtc_config)
-
-            model_value = getattr(self, "model", None)
-            if model_value is not None:
-                model_value.rtc_processor = self.rtc_processor
-
     def _rtc_enabled(self) -> bool:
-        return self.rtc_config is not None and self.rtc_config.enabled
+        rtc_config = getattr(self.config, "rtc_config", None)
+        return rtc_config is not None and rtc_config.enabled
 
     def _preprocess_images(self, batch: dict[str, Tensor]) -> tuple[list[Tensor], list[Tensor]]:
         """Preprocess images for the model.

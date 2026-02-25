@@ -307,9 +307,7 @@ def hf_transform_to_torch(items_dict: dict[str, list[Any]]) -> dict[str, list[to
         if isinstance(first_item, PILImage.Image):
             to_tensor = transforms.ToTensor()
             items_dict[key] = [to_tensor(img) for img in items_dict[key]]
-        elif first_item is None:
-            pass
-        else:
+        elif first_item is not None:
             items_dict[key] = [x if isinstance(x, str) else torch.tensor(x) for x in items_dict[key]]
     return items_dict
 
@@ -333,16 +331,12 @@ def check_version_compatibility(
     current_version: str | packaging.version.Version,
     enforce_breaking_major: bool = True,
 ) -> None:
-    v_check = (
-        packaging.version.parse(version_to_check)
-        if not isinstance(version_to_check, packaging.version.Version)
-        else version_to_check
-    )
-    v_current = (
-        packaging.version.parse(current_version)
-        if not isinstance(current_version, packaging.version.Version)
-        else current_version
-    )
+    if not isinstance(version_to_check, packaging.version.Version):
+        version_to_check = packaging.version.parse(version_to_check)
+    if not isinstance(current_version, packaging.version.Version):
+        current_version = packaging.version.parse(current_version)
+    v_check = version_to_check
+    v_current = current_version
     if v_check.major < v_current.major and enforce_breaking_major:
         raise BackwardCompatibilityError(repo_id, v_check)
     elif v_check.minor < v_current.minor:
@@ -361,9 +355,9 @@ def get_repo_versions(repo_id: str) -> list[packaging.version.Version]:
 
 
 def get_safe_version(repo_id: str, version: str | packaging.version.Version) -> str:
-    target_version = (
-        packaging.version.parse(version) if not isinstance(version, packaging.version.Version) else version
-    )
+    if not isinstance(version, packaging.version.Version):
+        version = packaging.version.parse(version)
+    target_version = version
     hub_versions = get_repo_versions(repo_id)
 
     if not hub_versions:
@@ -603,21 +597,18 @@ def get_delta_indices(delta_timestamps: dict[str, list[float]], fps: int) -> dic
 def resolve_delta_timestamps(
     policy_type: str, ds_meta
 ) -> dict[str, list] | None:
-    """Resolve delta_timestamps from policy type. For PI0: action_delta_indices = list(range(50))."""
-    delta_timestamps: dict[str, list] = {}
-    features = ds_meta.features if hasattr(ds_meta, "features") else ds_meta._info["features"]
-    fps = ds_meta.fps if hasattr(ds_meta, "fps") else ds_meta._info["fps"]
-
-    # PI0: chunk_size=50, action_delta_indices = [0..49]
-    if policy_type == "pi0":
-        action_delta_indices = list(range(50))
-        for key in features:
-            if key == ACTION:
-                delta_timestamps[key] = [i / fps for i in action_delta_indices]
-        return delta_timestamps if delta_timestamps else None
-
-    # Other policies: use PreTrainedConfig
+    """Resolve delta_timestamps from policy type using PreTrainedConfig registry."""
     from lerobot.configs.policies import PreTrainedConfig
+
+    # Ensure config modules are loaded so policy types are registered
+    if policy_type == "pi0":
+        import lerobot.policies.pi0.configuration_pi0  # noqa: F401
+    elif policy_type == "pi05":
+        import lerobot.policies.pi05.configuration_pi05  # noqa: F401
+
+    delta_timestamps: dict[str, list] = {}
+    features = ds_meta.features
+    fps = ds_meta.fps
 
     cfg = PreTrainedConfig.get_choice_class(policy_type)()
     for key in features:

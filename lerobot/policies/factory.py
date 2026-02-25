@@ -11,6 +11,7 @@ import torch
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType
 from lerobot.datasets.utils import dataset_to_policy_features
+from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.pi05.configuration_pi05 import PI05Config
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.utils import validate_visual_features_consistency
@@ -18,31 +19,16 @@ from lerobot.policies.utils import validate_visual_features_consistency
 
 def get_policy_class(name: str) -> type[PreTrainedPolicy]:
     """Retrieve a policy class by its registered name."""
-    if name == "pi0":
-        from lerobot.policies.pi0.modeling_pi0 import PI0Policy
-
-        return PI0Policy
-    elif name == "pi05":
-        from lerobot.policies.pi05.modeling_pi05 import PI05Policy
-
-        return PI05Policy
-    else:
-        try:
-            return _get_policy_cls_from_policy_name(name=name)
-        except Exception as e:
-            raise ValueError(f"Policy type '{name}' is not available.") from e
+    try:
+        return _get_policy_cls_from_policy_name(name=name)
+    except Exception as e:
+        raise ValueError(f"Policy type '{name}' is not available.") from e
 
 
 def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
-    """Instantiate a policy configuration object by type string. Not used for PI0."""
-    if policy_type == "pi05":
-        return PI05Config(**kwargs)
-    else:
-        try:
-            config_cls = PreTrainedConfig.get_choice_class(policy_type)
-            return config_cls(**kwargs)
-        except Exception as e:
-            raise ValueError(f"Policy type '{policy_type}' is not available.") from e
+    """Instantiate a policy configuration object by type string."""
+    config_cls = PreTrainedConfig.get_choice_class(policy_type)
+    return config_cls(**kwargs)
 
 
 def make_pre_post_processors(
@@ -51,30 +37,14 @@ def make_pre_post_processors(
     policy_cfg: PreTrainedConfig | None = None,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
 ) -> tuple[Callable, Callable]:
-    """Create pre-/post-processor callables. For PI0 use policy; for others use policy_cfg."""
-    if policy_type == "pi0" and policy is not None:
-        from lerobot.policies.pi0.processor_pi0 import make_pi0_pre_post_processors
-
-        return make_pi0_pre_post_processors(
-            input_features=policy.input_features,
-            output_features=policy.output_features,
-            device=policy.config.device,
-            tokenizer_max_length=48,
-            dataset_stats=dataset_stats,
-        )
-
-    if policy_cfg is not None and isinstance(policy_cfg, PI05Config):
-        from lerobot.policies.pi05.processor_pi05 import make_pi05_pre_post_processors
-
-        return make_pi05_pre_post_processors(config=policy_cfg, dataset_stats=dataset_stats)
-
+    """Create pre-/post-processor callables. Requires policy_cfg for all policy types."""
     if policy_cfg is not None:
         try:
             return _make_processors_from_policy_config(config=policy_cfg, dataset_stats=dataset_stats)
         except Exception as e:
             raise ValueError(f"Processor for policy type '{policy_cfg.type}' is not implemented.") from e
 
-    raise ValueError("For PI0 pass policy; for other policies pass policy_cfg.")
+    raise ValueError("policy_cfg is required to create pre/post processors.")
 
 
 def _load_policy_with_peft(policy_cls, pretrained_path: str | Path, **kwargs) -> "PreTrainedPolicy":
@@ -109,39 +79,11 @@ def make_policy(
     input_features = {key: ft for key, ft in features.items() if ft.type is not FeatureType.ACTION}
     output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
 
-    if policy_type == "pi0":
-        dataset_stats = ds_meta.stats if hasattr(ds_meta, "stats") else None
-        kwargs: dict[str, Any] = {
-            "input_features": input_features,
-            "output_features": output_features,
-            "device": device,
-            "dataset_stats": dataset_stats,
-            "dataset_meta": ds_meta,
-            **overrides,
-        }
-
-        if pretrained_path and use_peft:
-            policy = _load_policy_with_peft(policy_cls, pretrained_path, **kwargs)
-        elif pretrained_path:
-            policy = policy_cls.from_pretrained(pretrained_name_or_path=pretrained_path, **kwargs)
-        else:
-            if use_peft:
-                raise ValueError(
-                    "Instantiating a policy with use_peft=True without a checkpoint is not supported. "
-                    "See lerobot_train.py for PEFT training."
-                )
-            policy = policy_cls(**kwargs)
-
-        policy.to(policy.config.device)
-        if not rename_map:
-            validate_visual_features_consistency(policy.config, features)
-        return policy
-
-    # PI05 / PI0Fast: use config-based path
     cfg = make_policy_config(policy_type, pretrained_path=pretrained_path, use_peft=use_peft, device=device, **overrides)
     cfg.output_features = output_features
     if not cfg.input_features:
         cfg.input_features = input_features
+    cfg.validate_features()
 
     kwargs = {
         "config": cfg,

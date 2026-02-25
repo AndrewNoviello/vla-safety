@@ -236,7 +236,9 @@ def main():
     policy.eval()
     policy.config.device = str(device)
 
-    preprocessor, postprocessor = make_pre_post_processors("pi0", policy=policy)
+    preprocessor, postprocessor = make_pre_post_processors(
+        policy_type="pi0", policy_cfg=policy.config, dataset_stats=None
+    )
 
     observation = build_observation(
         policy,

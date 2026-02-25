@@ -156,7 +156,6 @@ def train():
     accelerator = Accelerator(
         step_scheduler_with_optimizer=False,
         kwargs_handlers=[ddp_kwargs],
-        cpu=False,
     )
 
     init_logging(accelerator=accelerator)
@@ -184,8 +183,9 @@ def train():
 
     image_transforms_fn = image_transforms()
 
-    def _create_dataset():
-        return load_dataset(
+    if is_main_process:
+        logging.info("Creating dataset")
+        dataset = load_dataset(
             DATASET_REPO_ID,
             episodes=DATASET_EPISODES,
             image_transforms=image_transforms_fn,
@@ -194,14 +194,17 @@ def train():
             policy_type=POLICY_TYPE,
         )
 
-    if is_main_process:
-        logging.info("Creating dataset")
-        dataset = _create_dataset()
-
     accelerator.wait_for_everyone()
 
     if not is_main_process:
-        dataset = _create_dataset()
+        dataset = load_dataset(
+            DATASET_REPO_ID,
+            episodes=DATASET_EPISODES,
+            image_transforms=image_transforms_fn,
+            root=DATASET_ROOT,
+            tolerance_s=TOLERANCE_S,
+            policy_type=POLICY_TYPE,
+        )
 
     # --- Policy ---
     if is_main_process:

@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .pi05.configuration_pi05 import PI05Config as PI05Config
+from .pi0.configuration_pi0 import PI0Config
+from .pi05.configuration_pi05 import PI05Config
 
 __all__ = [
+    "PI0Config",
     "PI05Config",
 ]

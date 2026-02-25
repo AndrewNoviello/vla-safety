@@ -9,7 +9,7 @@ import torch
 
 from transformers import AutoTokenizer
 
-from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
+from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.utils.constants import ACTION
 from lerobot.utils.processor_utils import (
     add_batch_dim,
@@ -19,14 +19,6 @@ from lerobot.utils.processor_utils import (
     tokenize_batch,
     unnormalize,
 )
-
-# Hardcoded normalization for PI0
-PI0_NORMALIZATION_MAPPING: dict[FeatureType, NormalizationMode] = {
-    FeatureType.VISUAL: NormalizationMode.IDENTITY,
-    FeatureType.STATE: NormalizationMode.MEAN_STD,
-    FeatureType.ACTION: NormalizationMode.MEAN_STD,
-}
-
 
 def _ensure_newline(batch: dict[str, Any]) -> dict[str, Any]:
     """Ensure ``batch["task"]`` strings end with a newline (PaliGemma compat)."""
@@ -42,16 +34,13 @@ def _ensure_newline(batch: dict[str, Any]) -> dict[str, Any]:
 
 
 def make_pi0_pre_post_processors(
-    input_features: dict[str, PolicyFeature],
-    output_features: dict[str, PolicyFeature],
-    device: str,
-    tokenizer_max_length: int = 48,
+    config: PI0Config,
     dataset_stats: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[Callable[[dict[str, Any]], dict[str, Any]], Callable[[torch.Tensor], torch.Tensor]]:
     """Return ``(preprocess, postprocess)`` callables for PI0."""
-    all_features = {**input_features, **output_features}
-    output_features_dict = dict(output_features)
-    norm_map = dict(PI0_NORMALIZATION_MAPPING)
+    all_features = {**config.input_features, **config.output_features}
+    output_features_dict = dict(config.output_features)
+    norm_map = dict(config.normalization_mapping)
     stats = prepare_stats(dataset_stats)
 
     tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
@@ -62,11 +51,11 @@ def make_pi0_pre_post_processors(
         batch = tokenize_batch(
             batch,
             tokenizer,
-            max_length=tokenizer_max_length,
+            max_length=config.tokenizer_max_length,
             padding_side="right",
             padding="max_length",
         )
-        batch = move_to_device(batch, device)
+        batch = move_to_device(batch, config.device)
         batch = normalize(batch, stats, all_features, norm_map)
         return batch
 

@@ -65,11 +65,23 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
         if not getattr(cls, "name", None):
             raise TypeError(f"Class {cls.__name__} must define 'name'")
 
+    @property
+    def input_features(self) -> dict:
+        """Input features from config. Returns empty dict if no config."""
+        return self.config.input_features if self.config else {}
+
+    @property
+    def output_features(self) -> dict:
+        """Output features from config. Returns empty dict if no config."""
+        return self.config.output_features if self.config else {}
+
     def _save_pretrained(self, save_directory: Path) -> None:
         save_directory = Path(save_directory)
         save_directory.mkdir(parents=True, exist_ok=True)
         model_to_save = self.module if hasattr(self, "module") else self
         save_model_as_safetensor(model_to_save, str(save_directory / SAFETENSORS_SINGLE_FILE))
+        if hasattr(self, "config") and self.config is not None and hasattr(self.config, "_save_pretrained"):
+            self.config._save_pretrained(save_directory)
 
     @classmethod
     def from_pretrained(

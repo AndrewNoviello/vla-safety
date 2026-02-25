@@ -56,23 +56,14 @@ def to_tensor(
 
 @to_tensor.register(torch.Tensor)
 def _(value: torch.Tensor, *, dtype=torch.float32, device=None, **kwargs) -> torch.Tensor:
-    if dtype is not None:
-        value = value.to(dtype=dtype)
-    if device is not None:
-        value = value.to(device=device)
-    return value
+    return value.to(dtype=dtype, device=device)
 
 
 @to_tensor.register(np.ndarray)
 def _(value: np.ndarray, *, dtype=torch.float32, device=None, **kwargs) -> torch.Tensor:
     if value.ndim == 0:
         return torch.tensor(value.item(), dtype=dtype, device=device)
-    tensor = torch.from_numpy(value)
-    if dtype is not None:
-        tensor = tensor.to(dtype=dtype)
-    if device is not None:
-        tensor = tensor.to(device=device)
-    return tensor
+    return torch.from_numpy(value).to(dtype=dtype, device=device)
 
 
 @to_tensor.register(int)

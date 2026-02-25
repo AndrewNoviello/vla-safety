@@ -51,7 +51,6 @@ def _deserialize_python_rng_state(rng_state_dict: dict[str, torch.Tensor]) -> No
 
 def _serialize_numpy_rng_state() -> dict[str, torch.Tensor]:
     np_state = np.random.get_state()
-    assert np_state[0] == "MT19937"
     return {
         "np_rng_state_values": torch.tensor(np_state[1], dtype=torch.int64),
         "np_rng_state_index": torch.tensor([np_state[2]], dtype=torch.int64),

@@ -178,7 +178,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
     @property
     def num_frames(self) -> int:
-        if self.episodes is not None and self.hf_dataset is not None:
+        if self.episodes is not None:
             return len(self.hf_dataset)
         return self._info["total_frames"]
 
@@ -262,7 +262,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         return hf_dataset
 
     def _check_cached_episodes_sufficient(self) -> bool:
-        if self.hf_dataset is None or len(self.hf_dataset) == 0:
+        if len(self.hf_dataset) == 0:
             return False
         available = {
             ep.item() if isinstance(ep, torch.Tensor) else ep
@@ -307,10 +307,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 if self._absolute_to_relative_idx is None
                 else [self._absolute_to_relative_idx[idx] for idx in q_idx]
             )
-            try:
-                result[key] = torch.stack(self.hf_dataset[key][relative_indices])
-            except (KeyError, TypeError, IndexError):
-                result[key] = torch.stack(self.hf_dataset[relative_indices][key])
+            result[key] = torch.stack(self.hf_dataset[key][relative_indices])
         return result
 
     # ------------------------------------------------------------------

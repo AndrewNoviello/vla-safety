@@ -180,7 +180,9 @@ def startup():
     policy.eval()
     policy.config.device = device
     image_size = tuple(policy.config.image_resolution)
-    preprocessor, postprocessor = make_pre_post_processors(policy.config)
+    preprocessor, postprocessor = make_pre_post_processors(
+        policy_type="pi0", policy_cfg=policy.config, dataset_stats=None
+    )
     print("Policy loaded. Ready for /predict.")
 
 
