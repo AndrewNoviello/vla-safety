@@ -39,7 +39,6 @@ Requires-Dist: torchvision<0.26.0,>=0.21.0
 Requires-Dist: gymnasium<2.0.0,>=1.1.1
 Requires-Dist: rerun-sdk<0.27.0,>=0.24.0
 Requires-Dist: deepdiff<9.0.0,>=7.0.1
-Requires-Dist: imageio[ffmpeg]<3.0.0,>=2.34.0
 Requires-Dist: termcolor<4.0.0,>=2.4.0
 Provides-Extra: pygame-dep
 Requires-Dist: pygame<2.7.0,>=2.5.1; extra == "pygame-dep"

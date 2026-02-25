@@ -121,8 +121,9 @@ def get_step_identifier(step: int, total_steps: int) -> str:
     return f"{step:0{num_digits}d}"
 
 
-def get_step_checkpoint_dir(output_dir: Path, total_steps: int, step: int) -> Path:
+def get_step_checkpoint_dir(output_dir: str | Path, total_steps: int, step: int) -> Path:
     """Returns the checkpoint sub-directory corresponding to the step number."""
+    output_dir = Path(output_dir)
     step_identifier = get_step_identifier(step, total_steps)
     return output_dir / CHECKPOINTS_DIR / step_identifier
 

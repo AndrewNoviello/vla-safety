@@ -78,7 +78,7 @@ PRETRAINED_PATH = None
 PUSH_TO_HUB = False
 
 STEPS = 10
-BATCH_SIZE = 1
+BATCH_SIZE = 32
 NUM_WORKERS = 0
 SEED = 1000
 LOG_FREQ = 10
@@ -214,6 +214,7 @@ def train():
         ds_meta=dataset.meta,
         pretrained_path=PRETRAINED_PATH,
         use_peft=PEFT_KWARGS is not None,
+        gradient_checkpointing=True
     )
 
     is_peft = PEFT_KWARGS is not None

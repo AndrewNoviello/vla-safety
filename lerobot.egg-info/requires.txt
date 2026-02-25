@@ -17,7 +17,6 @@ torchvision<0.26.0,>=0.21.0
 gymnasium<2.0.0,>=1.1.1
 rerun-sdk<0.27.0,>=0.24.0
 deepdiff<9.0.0,>=7.0.1
-imageio[ffmpeg]<3.0.0,>=2.34.0
 termcolor<4.0.0,>=2.4.0
 
 [:sys_platform != "win32" and (sys_platform != "linux" or (platform_machine != "aarch64" and platform_machine != "arm64" and platform_machine != "armv7l")) and (sys_platform != "darwin" or platform_machine != "x86_64")]
