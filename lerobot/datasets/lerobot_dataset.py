@@ -24,7 +24,6 @@ import torch.utils
 from huggingface_hub import snapshot_download
 
 from lerobot.datasets.compute_stats import aggregate_stats
-from lerobot.datasets.transforms import create_image_transforms
 from lerobot.datasets.utils import (
     check_delta_timestamps,
     check_version_compatibility,
@@ -393,13 +392,11 @@ def load_dataset(
     *,
     episodes: list[int] | None = None,
     delta_timestamps: dict[str, list[float]] | None = None,
-    image_transforms: dict | Callable | None = None,
+    image_transforms: Callable | None = None,
     root: Path | str | None = None,
     tolerance_s: float = 0.04,
 ) -> LeRobotDataset:
     """One-liner to load a dataset from HuggingFace Hub or local disk."""
-    if isinstance(image_transforms, dict) and "enable" in image_transforms:
-        image_transforms = create_image_transforms(image_transforms) if image_transforms["enable"] else None
     return LeRobotDataset(
         repo_id,
         episodes=episodes,

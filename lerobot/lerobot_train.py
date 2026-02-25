@@ -38,7 +38,7 @@ from torch.optim import Optimizer
 
 from lerobot.configs.types import FeatureType, NormalizationMode
 from lerobot.datasets.lerobot_dataset import load_dataset
-from lerobot.datasets.transforms import create_image_transforms, image_transforms_config
+from lerobot.datasets.transforms import image_transforms
 from lerobot.datasets.utils import cycle, resolve_delta_timestamps
 from lerobot.optim import make_optimizer_and_scheduler
 from lerobot.policies.factory import make_policy
@@ -193,14 +193,13 @@ def train():
     torch.backends.cuda.matmul.allow_tf32 = True
 
     # --- Dataset ---
-    image_transforms_cfg = image_transforms_config(enable=IMAGE_TRANSFORMS_ENABLED)
-    image_transforms = create_image_transforms(image_transforms_cfg) if image_transforms_cfg["enable"] else None
+    image_transforms_fn = image_transforms() if IMAGE_TRANSFORMS_ENABLED else None
 
     def _create_dataset():
         ds = load_dataset(
             DATASET_REPO_ID,
             episodes=DATASET_EPISODES,
-            image_transforms=image_transforms,
+            image_transforms=image_transforms_fn,
             root=DATASET_ROOT,
             tolerance_s=TOLERANCE_S,
         )
@@ -210,7 +209,7 @@ def train():
                 DATASET_REPO_ID,
                 episodes=DATASET_EPISODES,
                 delta_timestamps=delta_timestamps,
-                image_transforms=image_transforms,
+                image_transforms=image_transforms_fn,
                 root=DATASET_ROOT,
                 tolerance_s=TOLERANCE_S,
             )
