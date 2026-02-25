@@ -77,6 +77,22 @@ def make_pre_post_processors(
     raise ValueError("For PI0 pass policy; for other policies pass policy_cfg.")
 
 
+def _load_policy_with_peft(policy_cls, pretrained_path: str | Path, **kwargs) -> "PreTrainedPolicy":
+    """Load a policy from a PEFT adapter checkpoint."""
+    from peft import PeftConfig, PeftModel
+
+    logging.info("Loading policy's PEFT adapter.")
+    peft_config = PeftConfig.from_pretrained(pretrained_path)
+    base_path = peft_config.base_model_name_or_path
+    if not base_path:
+        raise ValueError(
+            "No pretrained model name found in adapter config. "
+            "Can't instantiate the pre-trained policy on which the adapter was trained."
+        )
+    policy = policy_cls.from_pretrained(pretrained_name_or_path=base_path, **kwargs)
+    return PeftModel.from_pretrained(policy, pretrained_path, config=peft_config)
+
+
 def make_policy(
     policy_type: str,
     ds_meta,
@@ -94,44 +110,20 @@ def make_policy(
     output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
 
     if policy_type == "pi0":
+        dataset_stats = ds_meta.stats if hasattr(ds_meta, "stats") else None
         kwargs: dict[str, Any] = {
             "input_features": input_features,
             "output_features": output_features,
             "device": device,
-            "dataset_stats": ds_meta.stats if hasattr(ds_meta, "stats") else None,
+            "dataset_stats": dataset_stats,
             "dataset_meta": ds_meta,
             **overrides,
         }
 
-        if pretrained_path and not use_peft:
-            policy = policy_cls.from_pretrained(
-                pretrained_name_or_path=pretrained_path,
-                input_features=input_features,
-                output_features=output_features,
-                dataset_stats=kwargs.get("dataset_stats"),
-                dataset_meta=ds_meta,
-                **overrides,
-            )
-        elif pretrained_path and use_peft:
-            from peft import PeftConfig, PeftModel
-
-            logging.info("Loading policy's PEFT adapter.")
-            peft_config = PeftConfig.from_pretrained(pretrained_path)
-            base_path = peft_config.base_model_name_or_path
-            if not base_path:
-                raise ValueError(
-                    "No pretrained model name found in adapter config. "
-                    "Can't instantiate the pre-trained policy on which the adapter was trained."
-                )
-            policy = policy_cls.from_pretrained(
-                pretrained_name_or_path=base_path,
-                input_features=input_features,
-                output_features=output_features,
-                dataset_stats=kwargs.get("dataset_stats"),
-                dataset_meta=ds_meta,
-                **overrides,
-            )
-            policy = PeftModel.from_pretrained(policy, pretrained_path, config=peft_config)
+        if pretrained_path and use_peft:
+            policy = _load_policy_with_peft(policy_cls, pretrained_path, **kwargs)
+        elif pretrained_path:
+            policy = policy_cls.from_pretrained(pretrained_name_or_path=pretrained_path, **kwargs)
         else:
             if use_peft:
                 raise ValueError(
@@ -140,10 +132,9 @@ def make_policy(
                 )
             policy = policy_cls(**kwargs)
 
-        resolved_device = policy.config.device
-        policy.to(resolved_device)
+        policy.to(policy.config.device)
         if not rename_map:
-            validate_visual_features_consistency_pi0(policy, features)
+            validate_visual_features_consistency(policy.config, features)
         return policy
 
     # PI05 / PI0Fast: use config-based path
@@ -158,21 +149,10 @@ def make_policy(
         "dataset_meta": ds_meta,
     }
 
-    if cfg.pretrained_path and not cfg.use_peft:
+    if cfg.pretrained_path and cfg.use_peft:
+        policy = _load_policy_with_peft(policy_cls, cfg.pretrained_path, **kwargs)
+    elif cfg.pretrained_path:
         policy = policy_cls.from_pretrained(pretrained_name_or_path=cfg.pretrained_path, **kwargs)
-    elif cfg.pretrained_path and cfg.use_peft:
-        from peft import PeftConfig, PeftModel
-
-        logging.info("Loading policy's PEFT adapter.")
-        peft_config = PeftConfig.from_pretrained(cfg.pretrained_path)
-        kwargs["pretrained_name_or_path"] = peft_config.base_model_name_or_path
-        if not kwargs["pretrained_name_or_path"]:
-            raise ValueError(
-                "No pretrained model name found in adapter config. "
-                "Can't instantiate the pre-trained policy on which the adapter was trained."
-            )
-        policy = policy_cls.from_pretrained(**kwargs)
-        policy = PeftModel.from_pretrained(policy, cfg.pretrained_path, config=peft_config)
     else:
         policy = policy_cls(**kwargs)
 
@@ -180,18 +160,6 @@ def make_policy(
     if not rename_map:
         validate_visual_features_consistency(cfg, features)
     return policy
-
-
-def validate_visual_features_consistency_pi0(policy: PreTrainedPolicy, features: dict) -> None:
-    """Validate visual features for PI0 (uses policy attributes instead of config)."""
-    expected_visuals = {k for k, v in policy.input_features.items() if v.type == FeatureType.VISUAL}
-    provided_visuals = {k for k, v in features.items() if v.type == FeatureType.VISUAL}
-    policy_subset = expected_visuals.issubset(provided_visuals)
-    dataset_subset = provided_visuals.issubset(expected_visuals)
-    if not (policy_subset or dataset_subset):
-        from lerobot.policies.utils import raise_feature_mismatch_error
-
-        raise_feature_mismatch_error(provided_visuals, expected_visuals)
 
 
 def _get_policy_cls_from_policy_name(name: str) -> type[PreTrainedPolicy]:

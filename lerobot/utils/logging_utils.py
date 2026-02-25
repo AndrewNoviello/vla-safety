@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from lerobot.utils.utils import format_big_number
@@ -47,85 +48,48 @@ class AverageMeter:
         return fmtstr.format(**self.__dict__)
 
 
+@dataclass
 class MetricsTracker:
     """
-    A helper class to track and log metrics over time.
+    Track and log training metrics over time.
 
     Usage pattern:
 
     ```python
-    # initialize, potentially with non-zero initial step (e.g. if resuming run)
     metrics = {"loss": AverageMeter("loss", ":.3f")}
-    train_metrics = MetricsTracker(cfg, dataset, metrics, initial_step=step)
+    train_tracker = MetricsTracker(batch_size, num_frames, num_episodes, metrics, initial_step=step)
 
-    # update metrics derived from step (samples, episodes, epochs) at each training step
-    train_metrics.step()
-
-    # update various metrics
-    loss = policy.forward(batch)
-    train_metrics.loss = loss
-
-    # display current metrics
-    logging.info(train_metrics)
-
-    # export for wandb
-    wandb.log(train_metrics.to_dict())
-
-    # reset averages after logging
-    train_metrics.reset_averages()
+    train_tracker.step()          # advance counters by one step
+    train_tracker.loss = 0.42     # update a named AverageMeter
+    logging.info(train_tracker)   # formatted string
+    wandb.log(train_tracker.to_dict())
+    train_tracker.reset_averages()
     ```
     """
 
-    __keys__ = [
-        "_batch_size",
-        "_num_frames",
-        "_avg_samples_per_ep",
-        "metrics",
-        "steps",
-        "samples",
-        "episodes",
-        "epochs",
-        "accelerator",
-    ]
+    batch_size: int
+    num_frames: int
+    num_episodes: int
+    metrics: dict[str, AverageMeter]
+    steps: int = 0
+    samples: int = 0
+    episodes: float = 0.0
+    epochs: float = 0.0
+    accelerator: Callable | None = None
 
-    def __init__(
-        self,
-        batch_size: int,
-        num_frames: int,
-        num_episodes: int,
-        metrics: dict[str, AverageMeter],
-        initial_step: int = 0,
-        accelerator: Callable | None = None,
-    ):
-        self.__dict__.update(dict.fromkeys(self.__keys__))
-        self._batch_size = batch_size
-        self._num_frames = num_frames
-        self._avg_samples_per_ep = num_frames / num_episodes
-        self.metrics = metrics
-
-        self.steps = initial_step
-        # A sample is an (observation,action) pair, where observation and action
-        # can be on multiple timestamps. In a batch, we have `batch_size` number of samples.
-        self.samples = self.steps * self._batch_size
+    def __post_init__(self) -> None:
+        self._avg_samples_per_ep = self.num_frames / self.num_episodes
+        # A sample is an (observation,action) pair; batch_size samples per step.
+        self.samples = self.steps * self.batch_size
         self.episodes = self.samples / self._avg_samples_per_ep
-        self.epochs = self.samples / self._num_frames
-        self.accelerator = accelerator
-
-    def __getattr__(self, name: str) -> int | dict[str, AverageMeter] | AverageMeter | Any:
-        if name in self.__dict__:
-            return self.__dict__[name]
-        elif name in self.metrics:
-            return self.metrics[name]
-        else:
-            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+        self.epochs = self.samples / self.num_frames
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if name in self.__dict__:
-            super().__setattr__(name, value)
-        elif name in self.metrics:
+        # Route metric names to their AverageMeter; everything else is a normal attr.
+        if name != "metrics" and hasattr(self, "metrics") and name in self.metrics:
             self.metrics[name].update(value)
         else:
-            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+            object.__setattr__(self, name, value)
 
     def step(self) -> None:
         """

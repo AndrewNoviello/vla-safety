@@ -15,6 +15,7 @@
 # limitations under the License.
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -39,29 +40,6 @@ def auto_select_torch_device() -> torch.device:
         logging.warning("No accelerated backend detected. Using default cpu, this will be slow.")
         return torch.device("cpu")
 
-
-# TODO(Steven): Remove log. log shouldn't be an argument, this should be handled by the logger level
-def get_safe_torch_device(try_device: str, log: bool = False) -> torch.device:
-    """Given a string, return a torch.device with checks on whether the device is available."""
-    try_device = str(try_device)
-    if try_device.startswith("cuda"):
-        assert torch.cuda.is_available()
-        device = torch.device(try_device)
-    elif try_device == "mps":
-        assert torch.backends.mps.is_available()
-        device = torch.device("mps")
-    elif try_device == "xpu":
-        assert torch.xpu.is_available()
-        device = torch.device("xpu")
-    elif try_device == "cpu":
-        device = torch.device("cpu")
-        if log:
-            logging.warning("Using CPU, this will be slow.")
-    else:
-        device = torch.device(try_device)
-        if log:
-            logging.warning(f"Using custom {try_device} device.")
-    return device
 
 
 def get_safe_dtype(dtype: torch.dtype, device: str | torch.device):
@@ -209,22 +187,13 @@ def get_elapsed_time_in_days_hours_minutes_seconds(elapsed_time_s: float):
     return days, hours, minutes, seconds
 
 
-class SuppressProgressBars:
-    """
-    Context manager to suppress progress bars.
-
-    Example
-    --------
-    ```python
-    with SuppressProgressBars():
-        # Code that would normally show progress bars
-    ```
-    """
-
-    def __enter__(self):
-        disable_progress_bar()
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
+@contextmanager
+def suppress_progress_bars():
+    """Context manager to suppress HuggingFace datasets progress bars."""
+    disable_progress_bar()
+    try:
+        yield
+    finally:
         enable_progress_bar()
 
 

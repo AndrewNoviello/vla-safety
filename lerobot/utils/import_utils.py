@@ -21,52 +21,20 @@ from typing import Any
 import dataclasses
 
 
-def is_package_available(
-    pkg_name: str, import_name: str | None = None, return_version: bool = False
-) -> tuple[bool, str] | bool:
-    """
-    Check if the package spec exists and grab its version to avoid importing a local directory.
+def is_package_available(pkg_name: str, import_name: str | None = None) -> bool:
+    """Check if a package is installed and importable.
 
     Args:
         pkg_name: The name of the package as installed via pip (e.g. "python-can").
-        import_name: The actual name used to import the package (e.g. "can").
-                     Defaults to pkg_name if not provided.
-        return_version: Whether to return the version string.
+        import_name: The actual import name (e.g. "can"). Defaults to pkg_name.
     """
-    if import_name is None:
-        import_name = pkg_name
-
-    # Check if the module spec exists using the import name
-    package_exists = importlib.util.find_spec(import_name) is not None
-    package_version = "N/A"
-    if package_exists:
-        try:
-            # Primary method to get the package version
-            package_version = importlib.metadata.version(pkg_name)
-
-        except importlib.metadata.PackageNotFoundError:
-            # Fallback method: Only for "torch" and versions containing "dev"
-            if pkg_name == "torch":
-                try:
-                    package = importlib.import_module(import_name)
-                    temp_version = getattr(package, "__version__", "N/A")
-                    # Check if the version contains "dev"
-                    if "dev" in temp_version:
-                        package_version = temp_version
-                        package_exists = True
-                    else:
-                        package_exists = False
-                except ImportError:
-                    # If the package can't be imported, it's not available
-                    package_exists = False
-            else:
-                # For packages other than "torch", don't attempt the fallback and set as not available
-                package_exists = False
-        logging.debug(f"Detected {pkg_name} version: {package_version}")
-    if return_version:
-        return package_exists, package_version
-    else:
-        return package_exists
+    if importlib.util.find_spec(import_name or pkg_name) is None:
+        return False
+    try:
+        importlib.metadata.version(pkg_name)
+        return True
+    except importlib.metadata.PackageNotFoundError:
+        return False
 
 
 _transformers_available = is_package_available("transformers")

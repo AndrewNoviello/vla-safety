@@ -39,7 +39,7 @@ from torchvision import transforms
 
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_PREFIX, OBS_STR, REWARD
-from lerobot.utils.utils import SuppressProgressBars, is_valid_numpy_dtype_string
+from lerobot.utils.utils import is_valid_numpy_dtype_string, suppress_progress_bars
 
 DEFAULT_CHUNK_SIZE = 1000
 DEFAULT_DATA_FILE_SIZE_IN_MB = 100
@@ -150,7 +150,7 @@ def load_nested_dataset(
     paths = sorted(pq_dir.glob("*/*.parquet"))
     if len(paths) == 0:
         raise FileNotFoundError(f"Provided directory does not contain any parquet file: {pq_dir}")
-    with SuppressProgressBars():
+    with suppress_progress_bars():
         filters = pa_ds.field("episode_index").isin(episodes) if episodes is not None else None
         return Dataset.from_parquet([str(path) for path in paths], filters=filters, features=features)
 
