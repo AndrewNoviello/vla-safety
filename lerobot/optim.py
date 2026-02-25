@@ -21,7 +21,7 @@ from lerobot.utils.constants import (
     OPTIMIZER_STATE,
     SCHEDULER_STATE,
 )
-from lerobot.utils.io_utils import deserialize_json_into_object
+from lerobot.utils.utils import deserialize_json_into_object
 
 
 # ---------------------------------------------------------------------------

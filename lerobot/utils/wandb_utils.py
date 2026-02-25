@@ -192,10 +192,3 @@ class WandBLogger:
                 continue
 
             self._wandb.log(data={f"{mode}/{k}": v}, step=step)
-
-    def log_video(self, video_path: str, step: int, mode: str = "train"):
-        if mode not in {"train", "eval"}:
-            raise ValueError(mode)
-
-        wandb_video = self._wandb.Video(video_path, format="mp4")
-        self._wandb.log({f"{mode}/video": wandb_video}, step=step)

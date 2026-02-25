@@ -13,16 +13,80 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import importlib
+import importlib.metadata
+import json
 import logging
 import os
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import TypeVar
 
 import numpy as np
 import torch
 from accelerate import Accelerator
 from datasets.utils.logging import disable_progress_bar, enable_progress_bar
+
+JsonLike = str | int | float | bool | None | list["JsonLike"] | dict[str, "JsonLike"] | tuple["JsonLike", ...]
+T = TypeVar("T", bound=JsonLike)
+
+
+def is_package_available(pkg_name: str, import_name: str | None = None) -> bool:
+    """Check if a package is installed and importable."""
+    if importlib.util.find_spec(import_name or pkg_name) is None:
+        return False
+    try:
+        importlib.metadata.version(pkg_name)
+        return True
+    except importlib.metadata.PackageNotFoundError:
+        return False
+
+
+_transformers_available = is_package_available("transformers")
+
+
+def deserialize_json_into_object(fpath: Path, obj: T) -> T:
+    """
+    Loads the JSON data from `fpath` and recursively fills `obj` with the
+    corresponding values (strictly matching structure and types).
+    Tuples in `obj` are expected to be lists in the JSON data, which will be
+    converted back into tuples.
+    """
+    with open(fpath, encoding="utf-8") as f:
+        data = json.load(f)
+
+    def _deserialize(target, source):
+        if isinstance(target, dict):
+            if not isinstance(source, dict):
+                raise TypeError(f"Type mismatch: expected dict, got {type(source)}")
+            if target.keys() != source.keys():
+                raise ValueError(
+                    f"Dictionary keys do not match.\nExpected: {target.keys()}, got: {source.keys()}"
+                )
+            for k in target:
+                target[k] = _deserialize(target[k], source[k])
+            return target
+        elif isinstance(target, list):
+            if not isinstance(source, list):
+                raise TypeError(f"Type mismatch: expected list, got {type(source)}")
+            if len(target) != len(source):
+                raise ValueError(f"List length mismatch: expected {len(target)}, got {len(source)}")
+            for i in range(len(target)):
+                target[i] = _deserialize(target[i], source[i])
+            return target
+        elif isinstance(target, tuple):
+            if not isinstance(source, list):
+                raise TypeError(f"Type mismatch: expected list (for tuple), got {type(source)}")
+            if len(target) != len(source):
+                raise ValueError(f"Tuple length mismatch: expected {len(target)}, got {len(source)}")
+            return tuple(_deserialize(t_item, s_item) for t_item, s_item in zip(target, source, strict=False))
+        else:
+            if type(target) is not type(source):
+                raise TypeError(f"Type mismatch: expected {type(target)}, got {type(source)}")
+            return source
+
+    return _deserialize(obj, data)
 
 
 def auto_select_torch_device() -> torch.device:
@@ -40,33 +104,6 @@ def auto_select_torch_device() -> torch.device:
         logging.warning("No accelerated backend detected. Using default cpu, this will be slow.")
         return torch.device("cpu")
 
-
-
-def get_safe_dtype(dtype: torch.dtype, device: str | torch.device):
-    """
-    mps is currently not compatible with float64
-    """
-    if isinstance(device, torch.device):
-        device = device.type
-    if device == "mps" and dtype == torch.float64:
-        return torch.float32
-    if device == "xpu" and dtype == torch.float64:
-        if hasattr(torch.xpu, "get_device_capability"):
-            device_capability = torch.xpu.get_device_capability()
-            # NOTE: Some Intel XPU devices do not support double precision (FP64).
-            # The `has_fp64` flag is returned by `torch.xpu.get_device_capability()`
-            # when available; if False, we fall back to float32 for compatibility.
-            if not device_capability.get("has_fp64", False):
-                logging.warning(f"Device {device} does not support float64, using float32 instead.")
-                return torch.float32
-        else:
-            logging.warning(
-                f"Device {device} capability check failed. Assuming no support for float64, using float32 instead."
-            )
-            return torch.float32
-        return dtype
-    else:
-        return dtype
 
 
 def is_torch_device_available(try_device: str) -> bool:
@@ -175,16 +212,6 @@ def is_valid_numpy_dtype_string(dtype_str: str) -> bool:
     except TypeError:
         # If a TypeError is raised, the string is not a valid dtype
         return False
-
-
-def get_elapsed_time_in_days_hours_minutes_seconds(elapsed_time_s: float):
-    days = int(elapsed_time_s // (24 * 3600))
-    elapsed_time_s %= 24 * 3600
-    hours = int(elapsed_time_s // 3600)
-    elapsed_time_s %= 3600
-    minutes = int(elapsed_time_s // 60)
-    seconds = elapsed_time_s % 60
-    return days, hours, minutes, seconds
 
 
 @contextmanager

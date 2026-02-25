@@ -49,11 +49,11 @@ from transformers import AutoTokenizer
 from lerobot.utils.processor_utils import tokenize_batch
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.processing import normalize, to_device
-from lerobot.utils.random_utils import set_seed
 from lerobot.utils.train_utils import (
     get_step_checkpoint_dir,
     load_training_state,
     save_checkpoint,
+    set_seed,
     update_last_checkpoint,
 )
 from lerobot.utils.utils import (

@@ -1,7 +1,6 @@
-"""Functional normalization utilities replacing the processor pipeline.
+"""Functional normalization utilities for training batches.
 
-Provides normalize/unnormalize for training batches and model outputs,
-plus a device-move helper. ImageNet stats are always applied to VISUAL features.
+Provides normalize and to_device. ImageNet stats are always applied to VISUAL features.
 """
 
 from __future__ import annotations
@@ -110,17 +109,6 @@ def normalize(
             out[key] = _apply_norm(tensor, key, stats, mode, inverse=False)
 
     return out
-
-
-def unnormalize(
-    actions: Tensor,
-    stats: dict[str, dict[str, Tensor]],
-    norm_mode: NormalizationMode | str,
-    action_key: str = "action",
-) -> Tensor:
-    """Reverse normalization on model-output actions."""
-    mode = NormalizationMode(norm_mode) if isinstance(norm_mode, str) else norm_mode
-    return _apply_norm(actions, action_key, stats, mode, inverse=True)
 
 
 def to_device(batch: dict, device: torch.device | str) -> dict:
