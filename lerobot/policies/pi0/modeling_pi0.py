@@ -1084,6 +1084,8 @@ class PI0Policy(PreTrainedPolicy):
             "device": resolved_device,
             "pretrained_path": pretrained_path,
             "use_peft": False,
+            "input_features": self.input_features,
+            "output_features": self.output_features,
         })()
 
         self.reset()

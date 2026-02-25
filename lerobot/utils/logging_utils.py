@@ -57,7 +57,7 @@ class MetricsTracker:
 
     ```python
     metrics = {"loss": AverageMeter("loss", ":.3f")}
-    train_tracker = MetricsTracker(batch_size, num_frames, num_episodes, metrics, initial_step=step)
+    train_tracker = MetricsTracker(batch_size, num_frames, num_episodes, metrics, steps=step)
 
     train_tracker.step()          # advance counters by one step
     train_tracker.loss = 0.42     # update a named AverageMeter

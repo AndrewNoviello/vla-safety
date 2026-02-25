@@ -22,6 +22,7 @@ from lerobot.datasets.utils import (
     load_stats,
     load_subtasks,
     load_tasks,
+    resolve_delta_timestamps,
 )
 from lerobot.utils.constants import HF_LEROBOT_HOME
 
@@ -43,6 +44,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         image_transforms: Callable | None = None,
         tolerance_s: float = 0.04,
         root: Path | str | None = None,
+        policy_type: str | None = None,
     ):
         super().__init__()
         self.repo_id = repo_id
@@ -114,6 +116,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 abs_idx.item() if isinstance(abs_idx, torch.Tensor) else abs_idx: rel_idx
                 for rel_idx, abs_idx in enumerate(self.hf_dataset["index"])
             }
+
+        if policy_type is not None and self.delta_timestamps is None:
+            self.delta_timestamps = resolve_delta_timestamps(policy_type, self)
 
         if self.delta_timestamps is not None:
             check_delta_timestamps(self.delta_timestamps, self.fps, self.tolerance_s)
@@ -188,6 +193,11 @@ class LeRobotDataset(torch.utils.data.Dataset):
     @property
     def total_frames(self) -> int:
         return self._info["total_frames"]
+
+    @property
+    def meta(self) -> "LeRobotDataset":
+        """Metadata interface compatible with make_policy (dataset has .features, .stats, etc.)."""
+        return self
 
     # ------------------------------------------------------------------
     # Data loading
@@ -371,8 +381,14 @@ def load_dataset(
     image_transforms: Callable | None = None,
     root: Path | str | None = None,
     tolerance_s: float = 0.04,
+    policy_type: str | None = None,
 ) -> LeRobotDataset:
-    """One-liner to load a dataset from HuggingFace Hub or local disk."""
+    """One-liner to load a dataset from HuggingFace Hub or local disk.
+
+    When policy_type is provided and delta_timestamps is not, delta_timestamps are
+    resolved automatically from the policy's configuration (e.g. PI0 uses 50-step
+    action chunks).
+    """
     return LeRobotDataset(
         repo_id,
         episodes=episodes,
@@ -380,4 +396,5 @@ def load_dataset(
         image_transforms=image_transforms,
         tolerance_s=tolerance_s,
         root=root,
+        policy_type=policy_type,
     )

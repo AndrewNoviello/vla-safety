@@ -284,17 +284,24 @@ def prepare_stats(
 
 
 def _ensure_stats_compat(
-    stats: dict[str, dict[str, torch.Tensor]],
+    stats: dict[str, dict[str, torch.Tensor | np.ndarray]],
     key: str,
     tensor: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
-    """Return the sub-dict for *key*, moving tensors to match *tensor* if needed."""
+    """Return the sub-dict for *key*, converting to tensors and moving to match *tensor* if needed."""
     sub = stats[key]
-    first = next(iter(sub.values()))
-    if first.device != tensor.device or first.dtype != tensor.dtype:
-        sub = {k: v.to(device=tensor.device, dtype=tensor.dtype) for k, v in sub.items()}
-        stats[key] = sub
-    return sub
+    device, dtype = tensor.device, tensor.dtype
+    # Convert numpy to tensor and ensure device/dtype match
+    result = {}
+    for k, v in sub.items():
+        if isinstance(v, np.ndarray):
+            result[k] = torch.from_numpy(v).to(device=device, dtype=dtype)
+        elif isinstance(v, torch.Tensor):
+            result[k] = v.to(device=device, dtype=dtype) if v.device != device or v.dtype != dtype else v
+        else:
+            result[k] = torch.tensor(v, device=device, dtype=dtype)
+    stats[key] = result
+    return result
 
 
 def _apply_norm(

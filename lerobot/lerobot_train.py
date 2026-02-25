@@ -39,7 +39,7 @@ from torch.optim import Optimizer
 from lerobot.configs.types import FeatureType, NormalizationMode
 from lerobot.datasets.lerobot_dataset import load_dataset
 from lerobot.datasets.augmentation import image_transforms
-from lerobot.datasets.utils import cycle, resolve_delta_timestamps
+from lerobot.datasets.utils import cycle
 from lerobot.optim import make_optimizer_and_scheduler
 from lerobot.policies.factory import make_policy
 from lerobot.policies.pi0.processor_pi0 import _ensure_newline
@@ -61,6 +61,8 @@ from lerobot.utils.utils import (
     init_logging,
 )
 from lerobot.utils.wandb_utils import WandBLogger
+
+from accelerate.utils import DistributedDataParallelKwargs
 
 # =====================================================================
 # Configuration -- edit these values for your experiment
@@ -84,8 +86,6 @@ SAVE_CHECKPOINT = True
 SAVE_FREQ = 20_000
 TOLERANCE_S = 1e-4
 
-IMAGE_TRANSFORMS_ENABLED = False
-
 PEFT_KWARGS = None  # set to e.g. {"method_type": "LORA", "r": 16} to enable PEFT
 
 WANDB_ENABLE = False
@@ -93,7 +93,7 @@ WANDB_PROJECT = "lerobot"
 WANDB_ENTITY = None
 WANDB_NOTES = None
 
-OUTPUT_DIR = None  # auto-generated if None
+OUTPUT_DIR = 'outputs/aloha_sim_insertion_scripted'
 
 # =====================================================================
 # Training logic
@@ -152,41 +152,28 @@ PI0_NORM_MAP = {
 
 
 def train():
-    output_dir = OUTPUT_DIR
-    if output_dir is None:
-        now = dt.datetime.now()
-        output_dir = Path("outputs/train") / f"{now:%Y-%m-%d}/{now:%H-%M-%S}_{POLICY_TYPE}"
-    else:
-        output_dir = Path(output_dir)
-
-    from accelerate.utils import DistributedDataParallelKwargs
-
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    force_cpu = False  # Use accelerator default
     accelerator = Accelerator(
         step_scheduler_with_optimizer=False,
         kwargs_handlers=[ddp_kwargs],
-        cpu=force_cpu,
+        cpu=False,
     )
 
     init_logging(accelerator=accelerator)
     is_main_process = accelerator.is_main_process
 
+    wandb_logger = None
     if WANDB_ENABLE and WANDB_PROJECT and is_main_process:
         wandb_logger = WandBLogger(
             project=WANDB_PROJECT,
             entity=WANDB_ENTITY,
             notes=WANDB_NOTES,
-            log_dir=output_dir,
+            log_dir=OUTPUT_DIR,
             job_name=POLICY_TYPE,
             policy_type=POLICY_TYPE,
             seed=SEED,
             dataset_repo_id=DATASET_REPO_ID,
         )
-    else:
-        wandb_logger = None
-        if is_main_process:
-            logging.info(colored("Logs will be saved locally.", "yellow", attrs=["bold"]))
 
     if SEED is not None:
         set_seed(SEED, accelerator=accelerator)
@@ -195,28 +182,17 @@ def train():
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
 
-    # --- Dataset ---
-    image_transforms_fn = image_transforms() if IMAGE_TRANSFORMS_ENABLED else None
+    image_transforms_fn = image_transforms()
 
     def _create_dataset():
-        ds = load_dataset(
+        return load_dataset(
             DATASET_REPO_ID,
             episodes=DATASET_EPISODES,
             image_transforms=image_transforms_fn,
             root=DATASET_ROOT,
             tolerance_s=TOLERANCE_S,
+            policy_type=POLICY_TYPE,
         )
-        delta_timestamps = resolve_delta_timestamps(POLICY_TYPE, ds)
-        if delta_timestamps is not None:
-            ds = load_dataset(
-                DATASET_REPO_ID,
-                episodes=DATASET_EPISODES,
-                delta_timestamps=delta_timestamps,
-                image_transforms=image_transforms_fn,
-                root=DATASET_ROOT,
-                tolerance_s=TOLERANCE_S,
-            )
-        return ds
 
     if is_main_process:
         logging.info("Creating dataset")
@@ -256,7 +232,7 @@ def train():
     num_total_params = sum(p.numel() for p in policy.parameters())
 
     if is_main_process:
-        logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {output_dir}")
+        logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {OUTPUT_DIR}")
         logging.info(f"steps={STEPS} ({format_big_number(STEPS)})")
         logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
         logging.info(f"{dataset.num_episodes=}")
@@ -299,7 +275,7 @@ def train():
         dataset.num_frames,
         dataset.num_episodes,
         train_metrics,
-        initial_step=step,
+        steps=step,
         accelerator=accelerator,
     )
 
@@ -355,7 +331,7 @@ def train():
         if SAVE_CHECKPOINT and is_saving_step:
             if is_main_process:
                 logging.info(f"Checkpoint policy after step {step}")
-                checkpoint_dir = get_step_checkpoint_dir(output_dir, STEPS, step)
+                checkpoint_dir = get_step_checkpoint_dir(OUTPUT_DIR, STEPS, step)
                 save_checkpoint(
                     checkpoint_dir=checkpoint_dir,
                     step=step,

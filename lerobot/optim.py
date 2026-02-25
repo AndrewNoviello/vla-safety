@@ -91,21 +91,9 @@ def make_pi0_optimizer(params: OptimizerParams, num_training_steps: int) -> Opti
     )
     return optimizer, scheduler, 1.0
 
-
-def make_groot_optimizer(params: OptimizerParams, num_training_steps: int) -> OptimizerResult:
-    lr = 1e-4
-    optimizer = torch.optim.AdamW(params, lr=lr, betas=(0.95, 0.999), eps=1e-8, weight_decay=1e-5)
-    scheduler = cosine_warmup_scheduler(
-        optimizer, num_training_steps,
-        warmup_steps=500, decay_steps=10_000, peak_lr=lr, decay_lr=lr * 0.1,
-    )
-    return optimizer, scheduler, 10.0
-
-
 PRESETS: dict[str, Any] = {
     "pi0": make_pi0_optimizer,
     "pi05": make_pi0_optimizer,
-    "groot": make_groot_optimizer,
 }
 
 
