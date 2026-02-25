@@ -46,9 +46,8 @@ from lerobot.policies.pi0.processor_pi0 import _ensure_newline
 from lerobot.policies.pretrained import PreTrainedPolicy
 from transformers import AutoTokenizer
 
-from lerobot.utils.processor_utils import tokenize_batch
+from lerobot.utils.processor_utils import normalize, to_device, tokenize_batch
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
-from lerobot.utils.processing import normalize, to_device
 from lerobot.utils.train_utils import (
     get_step_checkpoint_dir,
     load_training_state,

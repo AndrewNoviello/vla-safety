@@ -12,8 +12,20 @@ from typing import Any
 
 import numpy as np
 import torch
+from torch import Tensor
 
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
+
+# ImageNet normalization for VISUAL features (training)
+IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+_EPS = 1e-8
+
+
+def _ensure_tensor_on(t: Tensor, *, device: torch.device, dtype: torch.dtype) -> Tensor:
+    if t.device != device or t.dtype != dtype:
+        return t.to(device=device, dtype=dtype)
+    return t
 from lerobot.utils.constants import (
     ACTION,
     OBS_ENV_STATE,
@@ -156,6 +168,19 @@ def images_to_chw_float(batch: dict[str, Any]) -> dict[str, Any]:
 def move_to_device(data: dict[str, Any], device: str | torch.device) -> dict[str, Any]:
     """Move all tensors in a flat dict to *device*."""
     return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
+
+
+def to_device(batch: dict, device: torch.device | str) -> dict:
+    """Recursively move all tensors in a (possibly nested) dict to *device*."""
+    out: dict = {}
+    for k, v in batch.items():
+        if isinstance(v, Tensor):
+            out[k] = v.to(device, non_blocking=True)
+        elif isinstance(v, dict):
+            out[k] = to_device(v, device)
+        else:
+            out[k] = v
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -313,16 +338,32 @@ def normalize(
     batch: dict[str, Any],
     stats: dict[str, dict[str, torch.Tensor]],
     features: dict[str, PolicyFeature],
-    norm_map: dict[FeatureType, NormalizationMode],
+    norm_map: dict[FeatureType | str, NormalizationMode | str],
     eps: float = 1e-8,
 ) -> dict[str, Any]:
-    """Normalize observation and action keys in *batch* (forward pass)."""
-    if not stats:
-        return batch
+    """Normalize observation and action keys in *batch* (forward pass).
+
+    VISUAL features always get ImageNet mean/std. STATE and ACTION use the mode from *norm_map*.
+    """
+    resolved_map: dict[FeatureType, NormalizationMode] = {
+        FeatureType(k) if isinstance(k, str) else k: NormalizationMode(v) if isinstance(v, str) else v
+        for k, v in norm_map.items()
+    }
     result = dict(batch)
     for key, feat in features.items():
-        if key in result and isinstance(result[key], torch.Tensor):
-            result[key] = _apply_norm(result[key], key, feat.type, norm_map, stats, eps, inverse=False)
+        if key not in result:
+            continue
+        tensor = result[key]
+        if not isinstance(tensor, Tensor):
+            continue
+        if feat.type == FeatureType.VISUAL:
+            mean = _ensure_tensor_on(IMAGENET_MEAN, device=tensor.device, dtype=tensor.dtype)
+            std = _ensure_tensor_on(IMAGENET_STD, device=tensor.device, dtype=tensor.dtype)
+            result[key] = (tensor - mean) / (std + _EPS)
+        else:
+            result[key] = _apply_norm(
+                tensor, key, feat.type, resolved_map, stats, eps, inverse=False
+            )
     return result
 
 
