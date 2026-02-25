@@ -38,8 +38,7 @@ from torch.optim import Optimizer
 
 from lerobot.configs.types import FeatureType, NormalizationMode
 from lerobot.datasets.lerobot_dataset import load_dataset
-from lerobot.datasets.sampler import EpisodeAwareSampler
-from lerobot.datasets.transforms import ImageTransforms, ImageTransformsConfig
+from lerobot.datasets.transforms import create_image_transforms, image_transforms_config
 from lerobot.datasets.utils import cycle, resolve_delta_timestamps
 from lerobot.optim import make_optimizer_and_scheduler
 from lerobot.policies.factory import make_policy
@@ -194,8 +193,8 @@ def train():
     torch.backends.cuda.matmul.allow_tf32 = True
 
     # --- Dataset ---
-    image_transforms_cfg = ImageTransformsConfig(enable=IMAGE_TRANSFORMS_ENABLED)
-    image_transforms = ImageTransforms(image_transforms_cfg) if image_transforms_cfg.enable else None
+    image_transforms_cfg = image_transforms_config(enable=IMAGE_TRANSFORMS_ENABLED)
+    image_transforms = create_image_transforms(image_transforms_cfg) if image_transforms_cfg["enable"] else None
 
     def _create_dataset():
         ds = load_dataset(
@@ -266,15 +265,11 @@ def train():
         logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
     # --- Dataloader ---
-    shuffle = True
-    sampler = None
-
     dataloader = torch.utils.data.DataLoader(
         dataset,
         num_workers=NUM_WORKERS,
         batch_size=BATCH_SIZE,
-        shuffle=shuffle,
-        sampler=sampler,
+        shuffle=True,
         pin_memory=device.type == "cuda",
         drop_last=False,
         prefetch_factor=2 if NUM_WORKERS > 0 else None,

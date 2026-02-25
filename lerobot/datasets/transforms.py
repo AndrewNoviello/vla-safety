@@ -15,246 +15,178 @@
 # limitations under the License.
 import collections
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 import torch
 from torchvision.transforms import v2
-from torchvision.transforms.v2 import (
-    Transform,
-    functional as F,  # noqa: N812
-)
+from torchvision.transforms.v2 import Transform, functional as F  # noqa: N812
 
 
-class RandomSubsetApply(Transform):
-    """Apply a random subset of N transformations from a list of transformations.
+def default_transforms() -> dict[str, dict[str, Any]]:
+    """Return the default transform configs.
+
+    Each entry has: weight, type, kwargs.
+    See https://pytorch.org/vision/0.18/auto_examples/transforms/plot_transforms_illustrations.html
+    """
+    return {
+        "brightness": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"brightness": (0.8, 1.2)}},
+        "contrast": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"contrast": (0.8, 1.2)}},
+        "saturation": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"saturation": (0.5, 1.5)}},
+        "hue": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"hue": (-0.05, 0.05)}},
+        "sharpness": {"weight": 1.0, "type": "SharpnessJitter", "kwargs": {"sharpness": (0.5, 1.5)}},
+        "affine": {
+            "weight": 1.0,
+            "type": "RandomAffine",
+            "kwargs": {"degrees": (-5.0, 5.0), "translate": (0.05, 0.05)},
+        },
+    }
+
+
+def image_transforms_config(
+    enable: bool = False,
+    max_num_transforms: int = 3,
+    random_order: bool = False,
+    tfs: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Create image transforms config dict.
 
     Args:
-        transforms: list of transformations.
-        p: represents the multinomial probabilities (with no replacement) used for sampling the transform.
-            If the sum of the weights is not 1, they will be normalized. If ``None`` (default), all transforms
-            have the same probability.
-        n_subset: number of transformations to apply. If ``None``, all transforms are applied.
-            Must be in [1, len(transforms)].
-        random_order: apply transformations in a random order.
+        enable: Set to True to enable transforms during training.
+        max_num_transforms: Max number of transforms (sampled) applied per frame. [1, len(tfs)].
+        random_order: Apply transforms in random order when True.
+        tfs: Transform configs. If None, uses default_transforms().
     """
+    if tfs is None:
+        tfs = default_transforms()
+    return {
+        "enable": enable,
+        "max_num_transforms": max_num_transforms,
+        "random_order": random_order,
+        "tfs": tfs,
+    }
 
-    def __init__(
-        self,
-        transforms: Sequence[Callable],
-        p: list[float] | None = None,
-        n_subset: int | None = None,
-        random_order: bool = False,
-    ) -> None:
-        super().__init__()
-        if not isinstance(transforms, Sequence):
-            raise TypeError("Argument transforms should be a sequence of callables")
-        if p is None:
-            p = [1] * len(transforms)
-        elif len(p) != len(transforms):
-            raise ValueError(
-                f"Length of p doesn't match the number of transforms: {len(p)} != {len(transforms)}"
-            )
 
-        if n_subset is None:
-            n_subset = len(transforms)
-        elif not isinstance(n_subset, int):
-            raise TypeError("n_subset should be an int or None")
-        elif not (1 <= n_subset <= len(transforms)):
-            raise ValueError(f"n_subset should be in the interval [1, {len(transforms)}]")
+def _parse_sharpness_range(sharpness: float | Sequence[float]) -> tuple[float, float]:
+    if isinstance(sharpness, (int, float)):
+        if sharpness < 0:
+            raise ValueError("If sharpness is a single number, it must be non negative.")
+        sharpness = [1.0 - sharpness, 1.0 + sharpness]
+        sharpness[0] = max(sharpness[0], 0.0)
+    elif isinstance(sharpness, collections.abc.Sequence) and len(sharpness) == 2:
+        sharpness = [float(v) for v in sharpness]
+    else:
+        raise TypeError(f"{sharpness=} should be a single number or a sequence with length 2.")
 
-        self.transforms = transforms
-        total = sum(p)
-        self.p = [prob / total for prob in p]
-        self.n_subset = n_subset
-        self.random_order = random_order
+    if not 0.0 <= sharpness[0] <= sharpness[1]:
+        raise ValueError(f"sharpness values should be between (0., inf), but got {sharpness}.")
 
-        self.selected_transforms = None
+    return float(sharpness[0]), float(sharpness[1])
 
-    def forward(self, *inputs: Any) -> Any:
-        needs_unpacking = len(inputs) > 1
 
-        selected_indices = torch.multinomial(torch.tensor(self.p), self.n_subset)
-        if not self.random_order:
-            selected_indices = selected_indices.sort().values
+def sharpness_jitter_fn(img: torch.Tensor, sharpness_min: float, sharpness_max: float) -> torch.Tensor:
+    """Apply random sharpness jitter. Expects tensor input [..., 1 or 3, H, W]."""
+    sharpness_factor = torch.empty(1).uniform_(sharpness_min, sharpness_max).item()
+    return F.adjust_sharpness(img, sharpness_factor=sharpness_factor)
 
-        self.selected_transforms = [self.transforms[i] for i in selected_indices]
 
-        for transform in self.selected_transforms:
-            outputs = transform(*inputs)
-            inputs = outputs if needs_unpacking else (outputs,)
+def sharpness_jitter(sharpness: float | Sequence[float]) -> Callable:
+    """Return a callable that applies random sharpness jitter."""
+    sharpness_min, sharpness_max = _parse_sharpness_range(sharpness)
+    return partial(sharpness_jitter_fn, sharpness_min=sharpness_min, sharpness_max=sharpness_max)
 
-        return outputs
 
-    def extra_repr(self) -> str:
-        return (
-            f"transforms={self.transforms}, "
-            f"p={self.p}, "
-            f"n_subset={self.n_subset}, "
-            f"random_order={self.random_order}"
+def apply_random_subset(
+    img: Any,
+    transforms: Sequence[Callable],
+    weights: list[float],
+    n_subset: int,
+    random_order: bool,
+) -> Any:
+    """Apply a random subset of transforms to the input. Module-level for picklability."""
+    selected_indices = torch.multinomial(torch.tensor(weights), n_subset)
+    if not random_order:
+        selected_indices = selected_indices.sort().values
+    for i in selected_indices:
+        img = transforms[i](img)
+    return img
+
+
+def random_subset_apply(
+    transforms: Sequence[Callable],
+    p: list[float] | None = None,
+    n_subset: int | None = None,
+    random_order: bool = False,
+) -> Callable:
+    """Return a callable that applies a random subset of transforms."""
+    if not isinstance(transforms, Sequence):
+        raise TypeError("Argument transforms should be a sequence of callables")
+    if p is None:
+        p = [1] * len(transforms)
+    elif len(p) != len(transforms):
+        raise ValueError(
+            f"Length of p doesn't match the number of transforms: {len(p)} != {len(transforms)}"
         )
+    if n_subset is None:
+        n_subset = len(transforms)
+    elif not isinstance(n_subset, int):
+        raise TypeError("n_subset should be an int or None")
+    elif not (1 <= n_subset <= len(transforms)):
+        raise ValueError(f"n_subset should be in the interval [1, {len(transforms)}]")
 
-
-class SharpnessJitter(Transform):
-    """Randomly change the sharpness of an image or video.
-
-    Similar to a v2.RandomAdjustSharpness with p=1 and a sharpness_factor sampled randomly.
-    While v2.RandomAdjustSharpness applies — with a given probability — a fixed sharpness_factor to an image,
-    SharpnessJitter applies a random sharpness_factor each time. This is to have a more diverse set of
-    augmentations as a result.
-
-    A sharpness_factor of 0 gives a blurred image, 1 gives the original image while 2 increases the sharpness
-    by a factor of 2.
-
-    If the input is a :class:`torch.Tensor`,
-    it is expected to have [..., 1 or 3, H, W] shape, where ... means an arbitrary number of leading dimensions.
-
-    Args:
-        sharpness: How much to jitter sharpness. sharpness_factor is chosen uniformly from
-            [max(0, 1 - sharpness), 1 + sharpness] or the given
-            [min, max]. Should be non negative numbers.
-    """
-
-    def __init__(self, sharpness: float | Sequence[float]) -> None:
-        super().__init__()
-        self.sharpness = self._check_input(sharpness)
-
-    def _check_input(self, sharpness):
-        if isinstance(sharpness, (int | float)):
-            if sharpness < 0:
-                raise ValueError("If sharpness is a single number, it must be non negative.")
-            sharpness = [1.0 - sharpness, 1.0 + sharpness]
-            sharpness[0] = max(sharpness[0], 0.0)
-        elif isinstance(sharpness, collections.abc.Sequence) and len(sharpness) == 2:
-            sharpness = [float(v) for v in sharpness]
-        else:
-            raise TypeError(f"{sharpness=} should be a single number or a sequence with length 2.")
-
-        if not 0.0 <= sharpness[0] <= sharpness[1]:
-            raise ValueError(f"sharpness values should be between (0., inf), but got {sharpness}.")
-
-        return float(sharpness[0]), float(sharpness[1])
-
-    def make_params(self, flat_inputs: list[Any]) -> dict[str, Any]:
-        sharpness_factor = torch.empty(1).uniform_(self.sharpness[0], self.sharpness[1]).item()
-        return {"sharpness_factor": sharpness_factor}
-
-    def transform(self, inpt: Any, params: dict[str, Any]) -> Any:
-        sharpness_factor = params["sharpness_factor"]
-        return self._call_kernel(F.adjust_sharpness, inpt, sharpness_factor=sharpness_factor)
-
-
-@dataclass
-class ImageTransformConfig:
-    """
-    For each transform, the following parameters are available:
-      weight: This represents the multinomial probability (with no replacement)
-            used for sampling the transform. If the sum of the weights is not 1,
-            they will be normalized.
-      type: The name of the class used. This is either a class available under torchvision.transforms.v2 or a
-            custom transform defined here.
-      kwargs: Lower & upper bound respectively used for sampling the transform's parameter
-            (following uniform distribution) when it's applied.
-    """
-
-    weight: float = 1.0
-    type: str = "Identity"
-    kwargs: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class ImageTransformsConfig:
-    """
-    These transforms are all using standard torchvision.transforms.v2
-    You can find out how these transformations affect images here:
-    https://pytorch.org/vision/0.18/auto_examples/transforms/plot_transforms_illustrations.html
-    We use a custom RandomSubsetApply container to sample them.
-    """
-
-    # Set this flag to `true` to enable transforms during training
-    enable: bool = False
-    # This is the maximum number of transforms (sampled from these below) that will be applied to each frame.
-    # It's an integer in the interval [1, number_of_available_transforms].
-    max_num_transforms: int = 3
-    # By default, transforms are applied in Torchvision's suggested order (shown below).
-    # Set this to True to apply them in a random order.
-    random_order: bool = False
-    tfs: dict[str, ImageTransformConfig] = field(
-        default_factory=lambda: {
-            "brightness": ImageTransformConfig(
-                weight=1.0,
-                type="ColorJitter",
-                kwargs={"brightness": (0.8, 1.2)},
-            ),
-            "contrast": ImageTransformConfig(
-                weight=1.0,
-                type="ColorJitter",
-                kwargs={"contrast": (0.8, 1.2)},
-            ),
-            "saturation": ImageTransformConfig(
-                weight=1.0,
-                type="ColorJitter",
-                kwargs={"saturation": (0.5, 1.5)},
-            ),
-            "hue": ImageTransformConfig(
-                weight=1.0,
-                type="ColorJitter",
-                kwargs={"hue": (-0.05, 0.05)},
-            ),
-            "sharpness": ImageTransformConfig(
-                weight=1.0,
-                type="SharpnessJitter",
-                kwargs={"sharpness": (0.5, 1.5)},
-            ),
-            "affine": ImageTransformConfig(
-                weight=1.0,
-                type="RandomAffine",
-                kwargs={"degrees": (-5.0, 5.0), "translate": (0.05, 0.05)},
-            ),
-        }
+    total = sum(p)
+    weights = [prob / total for prob in p]
+    return partial(
+        apply_random_subset,
+        transforms=transforms,
+        weights=weights,
+        n_subset=n_subset,
+        random_order=random_order,
     )
 
 
-def make_transform_from_config(cfg: ImageTransformConfig):
-    if cfg.type == "SharpnessJitter":
-        return SharpnessJitter(**cfg.kwargs)
+def make_transform_from_config(tf_cfg: dict[str, Any]) -> Callable:
+    """Create a transform callable from a config dict with keys: weight, type, kwargs."""
+    transform_type = tf_cfg.get("type", "Identity")
+    kwargs = tf_cfg.get("kwargs", {})
 
-    transform_cls = getattr(v2, cfg.type, None)
+    if transform_type == "SharpnessJitter":
+        return sharpness_jitter(kwargs.get("sharpness", (0.5, 1.5)))
+
+    transform_cls = getattr(v2, transform_type, None)
     if isinstance(transform_cls, type) and issubclass(transform_cls, Transform):
-        return transform_cls(**cfg.kwargs)
+        return transform_cls(**kwargs)
 
     raise ValueError(
-        f"Transform '{cfg.type}' is not valid. It must be a class in "
+        f"Transform '{transform_type}' is not valid. It must be a class in "
         f"torchvision.transforms.v2 or 'SharpnessJitter'."
     )
 
 
-class ImageTransforms(Transform):
-    """A class to compose image transforms based on configuration."""
+def create_image_transforms(cfg: dict[str, Any]) -> Callable | None:
+    """Create image transform callable from config dict, or None if disabled.
 
-    def __init__(self, cfg: ImageTransformsConfig) -> None:
-        super().__init__()
-        self._cfg = cfg
+    Config dict has: enable, max_num_transforms, random_order, tfs.
+    Returns None when enable is False or no transforms; otherwise returns a picklable callable.
+    """
+    if not cfg.get("enable", False):
+        return None
 
-        self.weights = []
-        self.transforms = {}
-        for tf_name, tf_cfg in cfg.tfs.items():
-            if tf_cfg.weight <= 0.0:
-                continue
+    transforms_list = []
+    weights_list = []
+    for tf_cfg in cfg.get("tfs", {}).values():
+        if tf_cfg.get("weight", 1.0) <= 0.0:
+            continue
+        transforms_list.append(make_transform_from_config(tf_cfg))
+        weights_list.append(tf_cfg.get("weight", 1.0))
 
-            self.transforms[tf_name] = make_transform_from_config(tf_cfg)
-            self.weights.append(tf_cfg.weight)
+    n_subset = min(len(transforms_list), cfg.get("max_num_transforms", 3))
+    if n_subset == 0:
+        return None
 
-        n_subset = min(len(self.transforms), cfg.max_num_transforms)
-        if n_subset == 0 or not cfg.enable:
-            self.tf = v2.Identity()
-        else:
-            self.tf = RandomSubsetApply(
-                transforms=list(self.transforms.values()),
-                p=self.weights,
-                n_subset=n_subset,
-                random_order=cfg.random_order,
-            )
-
-    def forward(self, *inputs: Any) -> Any:
-        return self.tf(*inputs)
+    return random_subset_apply(
+        transforms=transforms_list,
+        p=weights_list,
+        n_subset=n_subset,
+        random_order=cfg.get("random_order", False),
+    )
