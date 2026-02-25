@@ -7,16 +7,18 @@ from typing import Any
 
 import torch
 
+from transformers import AutoTokenizer
+
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
-from lerobot.processor.pipeline import (
+from lerobot.utils.constants import ACTION
+from lerobot.utils.processor_utils import (
     add_batch_dim,
     move_to_device,
     normalize,
     prepare_stats,
+    tokenize_batch,
     unnormalize,
 )
-from lerobot.processor.tokenizer_processor import TextTokenizer
-from lerobot.utils.constants import ACTION
 
 # Hardcoded normalization for PI0
 PI0_NORMALIZATION_MAPPING: dict[FeatureType, NormalizationMode] = {
@@ -52,17 +54,18 @@ def make_pi0_pre_post_processors(
     norm_map = dict(PI0_NORMALIZATION_MAPPING)
     stats = prepare_stats(dataset_stats)
 
-    tokenizer = TextTokenizer(
-        tokenizer_name="google/paligemma-3b-pt-224",
-        max_length=tokenizer_max_length,
-        padding_side="right",
-        padding="max_length",
-    )
+    tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
 
     def preprocess(batch: dict[str, Any]) -> dict[str, Any]:
         batch = add_batch_dim(batch)
         batch = _ensure_newline(batch)
-        batch = tokenizer(batch)
+        batch = tokenize_batch(
+            batch,
+            tokenizer,
+            max_length=tokenizer_max_length,
+            padding_side="right",
+            padding="max_length",
+        )
         batch = move_to_device(batch, device)
         batch = normalize(batch, stats, all_features, norm_map)
         return batch

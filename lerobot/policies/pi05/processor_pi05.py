@@ -9,17 +9,19 @@ from typing import Any
 import numpy as np
 import torch
 
+from transformers import AutoTokenizer
+
 from lerobot.policies.pi05.configuration_pi05 import PI05Config
 from lerobot.policies.pi05.modeling_pi05 import pad_vector
-from lerobot.processor.pipeline import (
+from lerobot.utils.constants import ACTION, OBS_STATE
+from lerobot.utils.processor_utils import (
     add_batch_dim,
     move_to_device,
     normalize,
     prepare_stats,
+    tokenize_batch,
     unnormalize,
 )
-from lerobot.processor.tokenizer_processor import TextTokenizer
-from lerobot.utils.constants import ACTION, OBS_STATE
 
 
 def _prepare_state_prompt(
@@ -62,18 +64,19 @@ def make_pi05_pre_post_processors(
     device = config.device
     max_state_dim = config.max_state_dim
 
-    tokenizer = TextTokenizer(
-        tokenizer_name="google/paligemma-3b-pt-224",
-        max_length=config.tokenizer_max_length,
-        padding_side="right",
-        padding="max_length",
-    )
+    tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
 
     def preprocess(batch: dict[str, Any]) -> dict[str, Any]:
         batch = add_batch_dim(batch)
         batch = normalize(batch, stats, all_features, norm_map)
         batch = _prepare_state_prompt(batch, max_state_dim=max_state_dim)
-        batch = tokenizer(batch)
+        batch = tokenize_batch(
+            batch,
+            tokenizer,
+            max_length=config.tokenizer_max_length,
+            padding_side="right",
+            padding="max_length",
+        )
         batch = move_to_device(batch, device)
         return batch
 

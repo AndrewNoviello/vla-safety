@@ -1,7 +1,7 @@
 """Processing utilities for VLA policy pre- and post-processing.
 
 Pure functions for transforming batch dicts: tensor conversion, normalization,
-device transfer, batch dimension handling, and image format conversion.
+device transfer, batch dimension handling, image format conversion, and text tokenization.
 """
 
 from __future__ import annotations
@@ -14,7 +14,17 @@ import numpy as np
 import torch
 
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
-from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGE, OBS_IMAGES, OBS_STATE
+from lerobot.utils.constants import (
+    ACTION,
+    OBS_ENV_STATE,
+    OBS_IMAGE,
+    OBS_IMAGES,
+    OBS_LANGUAGE_ATTENTION_MASK,
+    OBS_LANGUAGE_SUBTASK_ATTENTION_MASK,
+    OBS_LANGUAGE_SUBTASK_TOKENS,
+    OBS_LANGUAGE_TOKENS,
+    OBS_STATE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +156,88 @@ def images_to_chw_float(batch: dict[str, Any]) -> dict[str, Any]:
 def move_to_device(data: dict[str, Any], device: str | torch.device) -> dict[str, Any]:
     """Move all tensors in a flat dict to *device*."""
     return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
+
+
+# ---------------------------------------------------------------------------
+# Text tokenization
+# ---------------------------------------------------------------------------
+
+def _detect_device(batch: dict[str, Any]) -> torch.device | None:
+    for value in batch.values():
+        if isinstance(value, torch.Tensor):
+            return value.device
+    return None
+
+
+def tokenize_batch(
+    batch: dict[str, Any],
+    tokenizer: Any,
+    *,
+    task_key: str = "task",
+    max_length: int = 512,
+    padding_side: str = "right",
+    padding: str = "max_length",
+    truncation: bool = True,
+) -> dict[str, Any]:
+    """Tokenize task text from ``batch["task"]`` and write tokens into the batch.
+
+    Writes ``observation.language.tokens`` and ``observation.language.attention_mask``
+    (and subtask variants if ``batch["subtask"]`` is present).
+
+    The caller must load the tokenizer (e.g. via ``AutoTokenizer.from_pretrained(...)``)
+    and pass it in. This avoids loading the tokenizer on every call.
+    """
+    batch = dict(batch)
+
+    task = batch.get(task_key)
+    if task is None:
+        raise ValueError(f"Key '{task_key}' not found in batch.")
+    if isinstance(task, str):
+        task = [task]
+    if not (isinstance(task, list) and all(isinstance(t, str) for t in task)):
+        raise ValueError("Task must be a string or list of strings")
+
+    tokenized = tokenizer(
+        task,
+        max_length=max_length,
+        truncation=truncation,
+        padding=padding,
+        padding_side=padding_side,
+        return_tensors="pt",
+    )
+    target_device = _detect_device(batch)
+    if target_device is not None:
+        tokenized = {
+            k: v.to(target_device) if isinstance(v, torch.Tensor) else v
+            for k, v in tokenized.items()
+        }
+
+    batch[OBS_LANGUAGE_TOKENS] = tokenized["input_ids"]
+    batch[OBS_LANGUAGE_ATTENTION_MASK] = tokenized["attention_mask"].to(dtype=torch.bool)
+
+    subtask = batch.get("subtask")
+    if subtask is not None:
+        if isinstance(subtask, str):
+            subtask = [subtask]
+        tokenized_sub = tokenizer(
+            subtask,
+            max_length=max_length,
+            truncation=truncation,
+            padding=padding,
+            padding_side=padding_side,
+            return_tensors="pt",
+        )
+        if target_device is not None:
+            tokenized_sub = {
+                k: v.to(target_device) if isinstance(v, torch.Tensor) else v
+                for k, v in tokenized_sub.items()
+            }
+        batch[OBS_LANGUAGE_SUBTASK_TOKENS] = tokenized_sub["input_ids"]
+        batch[OBS_LANGUAGE_SUBTASK_ATTENTION_MASK] = tokenized_sub["attention_mask"].to(
+            dtype=torch.bool
+        )
+
+    return batch
 
 
 # ---------------------------------------------------------------------------

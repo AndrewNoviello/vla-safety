@@ -44,7 +44,9 @@ from lerobot.optim import make_optimizer_and_scheduler
 from lerobot.policies.factory import make_policy
 from lerobot.policies.pi0.processor_pi0 import _ensure_newline
 from lerobot.policies.pretrained import PreTrainedPolicy
-from lerobot.processor.tokenizer_processor import TextTokenizer
+from transformers import AutoTokenizer
+
+from lerobot.utils.processor_utils import tokenize_batch
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.processing import normalize, to_device
 from lerobot.utils.random_utils import set_seed
@@ -310,19 +312,20 @@ def train():
     all_features = {**policy.input_features, **policy.output_features}
     norm_map = PI0_NORM_MAP
 
-    tokenizer = TextTokenizer(
-        tokenizer_name="google/paligemma-3b-pt-224",
-        max_length=48,
-        padding_side="right",
-        padding="max_length",
-    )
+    tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
 
     for _ in range(step, STEPS):
         start_time = time.perf_counter()
         batch = next(dl_iter)
         batch = normalize(batch, dataset.stats, all_features, norm_map)
         batch = _ensure_newline(batch)
-        batch = tokenizer(batch)
+        batch = tokenize_batch(
+            batch,
+            tokenizer,
+            max_length=48,
+            padding_side="right",
+            padding="max_length",
+        )
         batch = to_device(batch, device)
         train_tracker.dataloading_s = time.perf_counter() - start_time
 
