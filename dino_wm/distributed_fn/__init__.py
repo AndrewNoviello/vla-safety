@@ -10,4 +10,3 @@ from .distributed import (
     data_sampler,
     LOCAL_PROCESS_GROUP,
 )
-from .launch import launch
