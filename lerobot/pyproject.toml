@@ -314,16 +314,8 @@ ignore_errors = false
 # ignore_errors = false
 
 [[tool.mypy.overrides]]
-module = "lerobot.configs.*"
-ignore_errors = false
-
-# extra strictness for configs
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-
-[[tool.mypy.overrides]]
 module = "lerobot.optim.*"
+ignore_errors = false
 ignore_errors = false
 
 [[tool.mypy.overrides]]

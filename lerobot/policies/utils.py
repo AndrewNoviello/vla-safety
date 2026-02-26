@@ -19,7 +19,7 @@ import logging
 import numpy as np
 import torch
 
-from lerobot.configs.types import FeatureType, PolicyFeature
+from lerobot.types import FeatureType, PolicyFeature
 from typing import Any
 
 

@@ -36,7 +36,7 @@ from accelerate import Accelerator
 from termcolor import colored
 from torch.optim import Optimizer
 
-from lerobot.configs.types import FeatureType, NormalizationMode
+from lerobot.types import FeatureType, NormalizationMode
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.augmentation import image_transforms
 from lerobot.datasets.utils import cycle

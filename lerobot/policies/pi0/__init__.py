@@ -14,16 +14,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .configuration_pi0 import PI0Config
-from .modeling_pi0 import PI0Policy
-from .processor_pi0 import make_pi0_pre_post_processors
-from .pi0_constants import (
+from .configuration_pi0 import (
+    PI0Config,
     PI0_DEFAULT_CHUNK_SIZE,
     PI0_DEFAULT_IMAGE_RESOLUTION,
     PI0_DEFAULT_MAX_ACTION_DIM,
     PI0_DEFAULT_MAX_STATE_DIM,
     PI0_DEFAULT_N_ACTION_STEPS,
 )
+from .modeling_pi0 import PI0Policy
+from .processor_pi0 import make_pi0_pre_post_processors
 
 __all__ = [
     "PI0Config",

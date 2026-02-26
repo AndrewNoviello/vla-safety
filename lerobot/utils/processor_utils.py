@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
+from lerobot.types import FeatureType, NormalizationMode, PolicyFeature
 
 # ImageNet normalization for VISUAL features (training)
 IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)

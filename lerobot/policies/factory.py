@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from lerobot.configs.types import FeatureType
+from lerobot.types import FeatureType
 from lerobot.datasets.utils import dataset_to_policy_features
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.registry import get_config_class, get_known_policies

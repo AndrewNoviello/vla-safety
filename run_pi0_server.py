@@ -41,7 +41,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from lerobot.configs.types import FeatureType
+from lerobot.types import FeatureType
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.pi0 import PI0Policy
 from lerobot.policies.utils import prepare_observation_for_inference

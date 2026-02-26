@@ -40,9 +40,8 @@ else:
     GemmaForCausalLM = None
     PaliGemmaForConditionalGeneration = None
 
-from lerobot.policies.pi05.configuration_pi05 import PI05Config
+from lerobot.policies.pi05.configuration_pi05 import DEFAULT_IMAGE_SIZE, PI05Config
 from lerobot.utils.config_utils import load_config_from_checkpoint
-from lerobot.policies.pi05.pi05_constants import DEFAULT_IMAGE_SIZE
 from lerobot.policies.pretrained import PreTrainedPolicy, T
 from lerobot.policies.rtc.modeling_rtc import RTCProcessor
 from lerobot.utils.constants import (

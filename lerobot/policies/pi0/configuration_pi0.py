@@ -14,37 +14,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""PI0 configuration and architecture constants."""
+
 import builtins
 from dataclasses import dataclass, field
 from logging import getLogger
 from pathlib import Path
 from typing import Any, ClassVar
 
-from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
-from lerobot.policies.pi0.pi0_constants import (
-    PI0_DEFAULT_ACTION_EXPERT,
-    PI0_DEFAULT_CHUNK_SIZE,
-    PI0_DEFAULT_COMPILE_MODE,
-    PI0_DEFAULT_COMPILE_MODEL,
-    PI0_DEFAULT_DTYPE,
-    PI0_DEFAULT_FREEZE_VISION_ENCODER,
-    PI0_DEFAULT_GRADIENT_CHECKPOINTING,
-    PI0_DEFAULT_IMAGE_RESOLUTION,
-    PI0_DEFAULT_MAX_ACTION_DIM,
-    PI0_DEFAULT_MAX_PERIOD,
-    PI0_DEFAULT_MAX_STATE_DIM,
-    PI0_DEFAULT_MIN_PERIOD,
-    PI0_DEFAULT_N_ACTION_STEPS,
-    PI0_DEFAULT_NUM_INFERENCE_STEPS,
-    PI0_DEFAULT_PALIGEMMA,
-    PI0_DEFAULT_TIME_SAMPLING_BETA_ALPHA,
-    PI0_DEFAULT_TIME_SAMPLING_BETA_BETA,
-    PI0_DEFAULT_TIME_SAMPLING_OFFSET,
-    PI0_DEFAULT_TIME_SAMPLING_SCALE,
-    PI0_DEFAULT_TOKENIZER_MAX_LENGTH,
-    PI0_DEFAULT_TRAIN_EXPERT_ONLY,
-)
+from lerobot.types import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.policies.rtc.configuration_rtc import RTCConfig
+
+# PI0 architecture and flow-matching constants
+DEFAULT_IMAGE_SIZE = 224
+PI0_DEFAULT_PALIGEMMA = "gemma_2b"
+PI0_DEFAULT_ACTION_EXPERT = "gemma_300m"
+PI0_DEFAULT_CHUNK_SIZE = 50
+PI0_DEFAULT_N_ACTION_STEPS = 50
+PI0_DEFAULT_MAX_STATE_DIM = 32
+PI0_DEFAULT_MAX_ACTION_DIM = 32
+PI0_DEFAULT_IMAGE_RESOLUTION = (DEFAULT_IMAGE_SIZE, DEFAULT_IMAGE_SIZE)
+PI0_DEFAULT_DTYPE = "float32"
+PI0_DEFAULT_NUM_INFERENCE_STEPS = 10
+PI0_DEFAULT_TIME_SAMPLING_BETA_ALPHA = 1.5
+PI0_DEFAULT_TIME_SAMPLING_BETA_BETA = 1.0
+PI0_DEFAULT_TIME_SAMPLING_SCALE = 0.999
+PI0_DEFAULT_TIME_SAMPLING_OFFSET = 0.001
+PI0_DEFAULT_MIN_PERIOD = 4e-3
+PI0_DEFAULT_MAX_PERIOD = 4.0
+PI0_DEFAULT_GRADIENT_CHECKPOINTING = False
+PI0_DEFAULT_COMPILE_MODEL = False
+PI0_DEFAULT_COMPILE_MODE = "max-autotune"
+PI0_DEFAULT_FREEZE_VISION_ENCODER = False
+PI0_DEFAULT_TRAIN_EXPERT_ONLY = False
+PI0_DEFAULT_TOKENIZER_MAX_LENGTH = 48
 from lerobot.utils.config_utils import load_config_from_checkpoint, save_config
 from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.utils.utils import auto_select_torch_device, is_amp_available, is_torch_device_available

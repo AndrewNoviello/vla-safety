@@ -42,10 +42,10 @@ else:
 
 from dataclasses import dataclass
 
-from lerobot.configs.types import FeatureType, PolicyFeature
-from lerobot.policies.pi0.configuration_pi0 import PI0Config
-from lerobot.policies.pi0.pi0_constants import (
+from lerobot.types import FeatureType, PolicyFeature
+from lerobot.policies.pi0.configuration_pi0 import (
     DEFAULT_IMAGE_SIZE,
+    PI0Config,
     PI0_DEFAULT_ACTION_EXPERT,
     PI0_DEFAULT_CHUNK_SIZE,
     PI0_DEFAULT_COMPILE_MODE,

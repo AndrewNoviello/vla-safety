@@ -37,7 +37,7 @@ from huggingface_hub.errors import RevisionNotFoundError
 from PIL import Image as PILImage
 from torchvision import transforms
 
-from lerobot.configs.types import FeatureType, PolicyFeature
+from lerobot.types import FeatureType, PolicyFeature
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_PREFIX, OBS_STR, REWARD
 from lerobot.utils.utils import is_valid_numpy_dtype_string, suppress_progress_bars
 
