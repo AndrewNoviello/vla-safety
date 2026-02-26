@@ -37,7 +37,7 @@ from termcolor import colored
 from torch.optim import Optimizer
 
 from lerobot.configs.types import FeatureType, NormalizationMode
-from lerobot.datasets.lerobot_dataset import load_dataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.augmentation import image_transforms
 from lerobot.datasets.utils import cycle
 from lerobot.optim import make_optimizer_and_scheduler
@@ -185,7 +185,7 @@ def train():
 
     if is_main_process:
         logging.info("Creating dataset")
-        dataset = load_dataset(
+        dataset = LeRobotDataset(
             DATASET_REPO_ID,
             episodes=DATASET_EPISODES,
             image_transforms=image_transforms_fn,
@@ -197,7 +197,7 @@ def train():
     accelerator.wait_for_everyone()
 
     if not is_main_process:
-        dataset = load_dataset(
+        dataset = LeRobotDataset(
             DATASET_REPO_ID,
             episodes=DATASET_EPISODES,
             image_transforms=image_transforms_fn,
@@ -211,7 +211,7 @@ def train():
         logging.info("Creating policy")
     policy = make_policy(
         policy_type=POLICY_TYPE,
-        ds_meta=dataset.meta,
+        ds_meta=dataset,
         pretrained_path=PRETRAINED_PATH,
         use_peft=PEFT_KWARGS is not None,
         gradient_checkpointing=True
