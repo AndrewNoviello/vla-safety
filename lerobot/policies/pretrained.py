@@ -30,8 +30,8 @@ from safetensors.torch import load_model as load_model_as_safetensor, save_model
 from torch import Tensor, nn
 from typing_extensions import Unpack
 
-from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.utils import log_model_loading_keys
+from lerobot.utils.config_utils import load_config_from_checkpoint
 from lerobot.utils.hub import HubMixin
 
 T = TypeVar("T", bound="PreTrainedPolicy")
@@ -49,15 +49,9 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
     config_class: type | None = None
     name: str = "policy"
 
-    def __init__(self, config: PreTrainedConfig | None = None, *inputs, **kwargs):
+    def __init__(self, config=None, *inputs, **kwargs):
         super().__init__()
         if config is not None:
-            if not isinstance(config, PreTrainedConfig):
-                raise ValueError(
-                    f"Parameter config in `{self.__class__.__name__}(config)` should be an instance of class "
-                    "`PreTrainedConfig`. To create a model from a pretrained model use "
-                    f"`model = {self.__class__.__name__}.from_pretrained(PRETRAINED_MODEL_NAME)`"
-                )
             self.config = config
 
     def __init_subclass__(cls, **kwargs):
@@ -88,7 +82,7 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
         cls: builtins.type[T],
         pretrained_name_or_path: str | Path,
         *,
-        config: PreTrainedConfig | None = None,
+        config=None,
         force_download: bool = False,
         resume_download: bool | None = None,
         proxies: dict | None = None,
@@ -104,8 +98,8 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
         deactivated). To train it, you should first set it back in training mode with `policy.train()`.
         """
         if config is None:
-            config = PreTrainedConfig.from_pretrained(
-                pretrained_name_or_path=pretrained_name_or_path,
+            config = load_config_from_checkpoint(
+                pretrained_name_or_path,
                 force_download=force_download,
                 resume_download=resume_download,
                 proxies=proxies,
@@ -113,7 +107,6 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
                 cache_dir=cache_dir,
                 local_files_only=local_files_only,
                 revision=revision,
-                **kwargs,
             )
         model_id = str(pretrained_name_or_path)
         instance = cls(config, **kwargs)

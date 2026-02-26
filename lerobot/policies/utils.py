@@ -19,7 +19,6 @@ import logging
 import numpy as np
 import torch
 
-from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, PolicyFeature
 from typing import Any
 
@@ -101,7 +100,7 @@ def raise_feature_mismatch_error(
 
 
 def validate_visual_features_consistency(
-    cfg: PreTrainedConfig,
+    cfg,
     features: dict[str, PolicyFeature],
 ) -> None:
     """
@@ -112,7 +111,7 @@ def validate_visual_features_consistency(
     - Dataset's provided visuals are a subset of policy (policy declares extras for flexibility)
 
     Args:
-        cfg (PreTrainedConfig): The model or policy configuration containing input_features and type.
+        cfg: The policy configuration containing input_features.
         features (Dict[str, PolicyFeature]): A mapping of feature names to PolicyFeature objects.
     """
     expected_visuals = {k for k, v in cfg.input_features.items() if v.type == FeatureType.VISUAL}

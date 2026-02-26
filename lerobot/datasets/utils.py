@@ -597,27 +597,25 @@ def get_delta_indices(delta_timestamps: dict[str, list[float]], fps: int) -> dic
 def resolve_delta_timestamps(
     policy_type: str, ds_meta
 ) -> dict[str, list] | None:
-    """Resolve delta_timestamps from policy type using PreTrainedConfig registry."""
-    from lerobot.configs.policies import PreTrainedConfig
-
-    # Ensure config modules are loaded so policy types are registered
-    if policy_type == "pi0":
-        import lerobot.policies.pi0.configuration_pi0  # noqa: F401
-    elif policy_type == "pi05":
-        import lerobot.policies.pi05.configuration_pi05  # noqa: F401
+    """Resolve delta_timestamps from the policy config's delta index properties."""
+    from lerobot.policies.registry import get_config_class
 
     delta_timestamps: dict[str, list] = {}
     features = ds_meta.features
     fps = ds_meta.fps
 
-    cfg = PreTrainedConfig.get_choice_class(policy_type)()
+    cfg = get_config_class(policy_type)()
+    reward_delta = getattr(cfg, "reward_delta_indices", None)
+    action_delta = getattr(cfg, "action_delta_indices", None)
+    obs_delta = getattr(cfg, "observation_delta_indices", None)
+
     for key in features:
-        if key == REWARD and cfg.reward_delta_indices is not None:
-            delta_timestamps[key] = [i / fps for i in cfg.reward_delta_indices]
-        if key == ACTION and cfg.action_delta_indices is not None:
-            delta_timestamps[key] = [i / fps for i in cfg.action_delta_indices]
-        if key.startswith(OBS_PREFIX) and cfg.observation_delta_indices is not None:
-            delta_timestamps[key] = [i / fps for i in cfg.observation_delta_indices]
+        if key == REWARD and reward_delta is not None:
+            delta_timestamps[key] = [i / fps for i in reward_delta]
+        if key == ACTION and action_delta is not None:
+            delta_timestamps[key] = [i / fps for i in action_delta]
+        if key.startswith(OBS_PREFIX) and obs_delta is not None:
+            delta_timestamps[key] = [i / fps for i in obs_delta]
     return delta_timestamps if delta_timestamps else None
 
 

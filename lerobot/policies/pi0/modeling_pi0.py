@@ -42,7 +42,6 @@ else:
 
 from dataclasses import dataclass
 
-from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.pi0.pi0_constants import (
@@ -1059,7 +1058,7 @@ class PI0Policy(PreTrainedPolicy):
         cls: builtins.type[T],
         pretrained_name_or_path: str | Path,
         *,
-        config: PreTrainedConfig | None = None,
+        config: PI0Config | None = None,
         force_download: bool = False,
         resume_download: bool | None = None,
         proxies: dict | None = None,

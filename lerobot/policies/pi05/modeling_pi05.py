@@ -40,8 +40,8 @@ else:
     GemmaForCausalLM = None
     PaliGemmaForConditionalGeneration = None
 
-from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.pi05.configuration_pi05 import PI05Config
+from lerobot.utils.config_utils import load_config_from_checkpoint
 from lerobot.policies.pi05.pi05_constants import DEFAULT_IMAGE_SIZE
 from lerobot.policies.pretrained import PreTrainedPolicy, T
 from lerobot.policies.rtc.modeling_rtc import RTCProcessor
@@ -932,7 +932,7 @@ class PI05Policy(PreTrainedPolicy):
         cls: builtins.type[T],
         pretrained_name_or_path: str | Path,
         *,
-        config: PreTrainedConfig | None = None,
+        config: PI05Config | None = None,
         force_download: bool = False,
         resume_download: bool | None = None,
         proxies: dict | None = None,
@@ -954,8 +954,8 @@ class PI05Policy(PreTrainedPolicy):
 
         # Use provided config if available, otherwise create default config
         if config is None:
-            config = PreTrainedConfig.from_pretrained(
-                pretrained_name_or_path=pretrained_name_or_path,
+            config = load_config_from_checkpoint(
+                pretrained_name_or_path,
                 force_download=force_download,
                 resume_download=resume_download,
                 proxies=proxies,
@@ -963,7 +963,6 @@ class PI05Policy(PreTrainedPolicy):
                 cache_dir=cache_dir,
                 local_files_only=local_files_only,
                 revision=revision,
-                **kwargs,
             )
 
         # Initialize model without loading weights

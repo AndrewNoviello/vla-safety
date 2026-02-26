@@ -8,12 +8,10 @@ from typing import Any
 
 import torch
 
-from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType
 from lerobot.datasets.utils import dataset_to_policy_features
-from lerobot.policies.pi0.configuration_pi0 import PI0Config
-from lerobot.policies.pi05.configuration_pi05 import PI05Config
 from lerobot.policies.pretrained import PreTrainedPolicy
+from lerobot.policies.registry import get_config_class, get_known_policies
 from lerobot.policies.utils import validate_visual_features_consistency
 
 
@@ -25,16 +23,16 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         raise ValueError(f"Policy type '{name}' is not available.") from e
 
 
-def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
+def make_policy_config(policy_type: str, **kwargs):
     """Instantiate a policy configuration object by type string."""
-    config_cls = PreTrainedConfig.get_choice_class(policy_type)
+    config_cls = get_config_class(policy_type)
     return config_cls(**kwargs)
 
 
 def make_pre_post_processors(
     policy_type: str,
     policy: PreTrainedPolicy | None = None,
-    policy_cfg: PreTrainedConfig | None = None,
+    policy_cfg=None,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
 ) -> tuple[Callable, Callable]:
     """Create pre-/post-processor callables. Requires policy_cfg for all policy types."""
@@ -71,7 +69,7 @@ def make_policy(
     device: str | None = None,
     rename_map: dict[str, str] | None = None,
     **overrides,
-) -> PreTrainedPolicy:
+):
     """Instantiate a policy model from a dataset."""
     policy_cls = get_policy_class(policy_type)
     features = dataset_to_policy_features(ds_meta.features)
@@ -104,13 +102,13 @@ def make_policy(
     return policy
 
 
-def _get_policy_cls_from_policy_name(name: str) -> type[PreTrainedPolicy]:
-    if name not in PreTrainedConfig.get_known_choices():
+def _get_policy_cls_from_policy_name(name: str):
+    if name not in get_known_policies():
         raise ValueError(
-            f"Unknown policy name '{name}'. Available policies: {PreTrainedConfig.get_known_choices()}"
+            f"Unknown policy name '{name}'. Available policies: {get_known_policies()}"
         )
 
-    config_cls = PreTrainedConfig.get_choice_class(name)
+    config_cls = get_config_class(name)
     config_cls_name = config_cls.__name__
 
     model_name = config_cls_name.removesuffix("Config")
@@ -128,7 +126,7 @@ def _get_policy_cls_from_policy_name(name: str) -> type[PreTrainedPolicy]:
 
 
 def _make_processors_from_policy_config(
-    config: PreTrainedConfig,
+    config,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
 ) -> tuple[Callable, Callable]:
     policy_type = config.type

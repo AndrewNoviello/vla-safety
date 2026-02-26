@@ -18,6 +18,7 @@ pyproject.toml
 ../lerobot/policies/__init__.py
 ../lerobot/policies/factory.py
 ../lerobot/policies/pretrained.py
+../lerobot/policies/registry.py
 ../lerobot/policies/utils.py
 ../lerobot/policies/pi0/__init__.py
 ../lerobot/policies/pi0/configuration_pi0.py
@@ -33,6 +34,7 @@ pyproject.toml
 ../lerobot/policies/rtc/configuration_rtc.py
 ../lerobot/policies/rtc/debug_tracker.py
 ../lerobot/policies/rtc/modeling_rtc.py
+../lerobot/utils/config_utils.py
 ../lerobot/utils/constants.py
 ../lerobot/utils/hub.py
 ../lerobot/utils/logging_utils.py
