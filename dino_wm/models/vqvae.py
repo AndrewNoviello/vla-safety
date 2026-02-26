@@ -2,8 +2,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-import sys
-sys.path.append('..')
 import distributed_fn as dist_fn
 from einops import rearrange
 
