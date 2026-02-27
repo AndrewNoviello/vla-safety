@@ -63,7 +63,7 @@ if str(DINO_WM_PATH) not in sys.path:
 from models.visual_world_model import VWorldModel  # noqa: E402
 from models.dino import DinoV2Encoder  # noqa: E402
 from models.vit import ViTPredictor  # noqa: E402
-from models.vqvae import VQVAE  # noqa: E402
+from models.decoder import Decoder  # noqa: E402
 from models.proprio import ProprioceptiveEmbedding  # noqa: E402
 
 # =====================================================================
@@ -105,10 +105,8 @@ CFG = DinoWMConfig(
     has_decoder=True,
     train_decoder=True,
     decoder_channel=384,
-    decoder_n_embed=2048,
     decoder_n_res_block=4,
     decoder_n_res_channel=128,
-    decoder_quantize=False,
 
     # Training
     steps=100_000,
@@ -232,7 +230,7 @@ def _build_model(
         if encoder.latent_ndim == 1:
             num_vis_patches = 1
         else:
-            decoder_scale = 16  # fixed by VQVAE stride=4 × stride=4
+            decoder_scale = 16  # fixed by decoder stride=4 × stride=4
             num_side = cfg.img_size // decoder_scale
             num_vis_patches = num_side ** 2  # e.g. 14^2 = 196 for img_size=224
 
@@ -262,13 +260,11 @@ def _build_model(
     # --- Decoder ---
     decoder = None
     if cfg.has_decoder:
-        decoder = VQVAE(
+        decoder = Decoder(
             channel=cfg.decoder_channel,
             n_res_block=cfg.decoder_n_res_block,
             n_res_channel=cfg.decoder_n_res_channel,
             emb_dim=emb_dim,
-            n_embed=cfg.decoder_n_embed,
-            quantize=cfg.decoder_quantize,
         )
         if not cfg.train_decoder:
             for p in decoder.parameters():
@@ -543,9 +539,9 @@ def train(cfg: DinoWMConfig = CFG) -> None:
     if cfg.has_decoder:
         loss_keys += [
             "decoder_recon_loss_pred",
+            "decoder_loss_pred",
             "decoder_recon_loss_reconstructed",
-            "decoder_vq_loss_pred",
-            "decoder_vq_loss_reconstructed",
+            "decoder_loss_reconstructed",
         ]
     for k in loss_keys:
         train_metrics[k] = AverageMeter(k, ":.4f")

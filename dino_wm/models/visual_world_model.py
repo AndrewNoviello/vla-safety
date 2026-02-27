@@ -36,8 +36,8 @@ class VWorldModel(nn.Module):
         self.train_decoder = train_decoder
         self.num_action_repeat = num_action_repeat
         self.num_proprio_repeat = num_proprio_repeat
-        self.proprio_dim = proprio_dim * num_proprio_repeat 
-        self.action_dim = action_dim * num_action_repeat 
+        self.proprio_dim = proprio_dim * num_proprio_repeat
+        self.action_dim = action_dim * num_action_repeat
         self.emb_dim = self.encoder.emb_dim + (self.action_dim + self.proprio_dim) * (concat_dim) # Not used
 
         print(f"num_action_repeat: {self.num_action_repeat}")
@@ -53,7 +53,7 @@ class VWorldModel(nn.Module):
         print("Model emb_dim: ", self.emb_dim)
 
         if "dino" in self.encoder.name:
-            decoder_scale = 16  # from vqvae
+            decoder_scale = 16
             num_side_patches = image_size // decoder_scale
             self.encoder_image_size = num_side_patches * encoder.patch_size
             self.encoder_transform = transforms.Compose(
@@ -64,7 +64,6 @@ class VWorldModel(nn.Module):
             self.encoder_transform = lambda x: x
 
         self.decoder_criterion = nn.MSELoss()
-        self.decoder_latent_loss_weight = 0.25
         self.emb_criterion = nn.MSELoss()
 
     def train(self, mode=True):
@@ -88,9 +87,9 @@ class VWorldModel(nn.Module):
         if self.decoder is not None:
             self.decoder.eval()
 
-    def encode(self, obs, act): 
+    def encode(self, obs, act):
         """
-        input :  obs (dict): "visual", "proprio", (b, num_frames, 3, img_size, img_size) 
+        input :  obs (dict): "visual", "proprio", (b, num_frames, 3, img_size, img_size)
         output:    z (tensor): (b, num_frames, num_patches, emb_dim)
         """
         z_dct = self.encode_obs(obs)
@@ -108,11 +107,11 @@ class VWorldModel(nn.Module):
                 [z_dct['visual'], proprio_repeated, act_repeated], dim=3
             )  # (b, num_frames, num_patches, dim + action_dim)
         return z
-    
+
     def encode_act(self, act):
         act = self.action_encoder(act) # (b, num_frames, action_emb_dim)
         return act
-    
+
     def encode_proprio(self, proprio):
         proprio = self.proprio_encoder(proprio)
         return proprio
@@ -152,8 +151,8 @@ class VWorldModel(nn.Module):
         output: obs: (b, num_frames, 3, img_size, img_size)
         """
         z_obs, z_act = self.separate_emb(z)
-        obs, diff = self.decode_obs(z_obs)
-        return obs, diff
+        obs = self.decode_obs(z_obs)
+        return obs
 
     def decode_obs(self, z_obs):
         """
@@ -161,14 +160,14 @@ class VWorldModel(nn.Module):
         output: obs: (b, num_frames, 3, img_size, img_size)
         """
         b, num_frames, num_patches, emb_dim = z_obs["visual"].shape
-        visual, diff = self.decoder(z_obs["visual"])  # (b*num_frames, 3, 224, 224)
+        visual = self.decoder(z_obs["visual"])  # (b*num_frames, 3, 224, 224)
         visual = rearrange(visual, "(b t) c h w -> b t c h w", t=num_frames)
         obs = {
             "visual": visual,
             "proprio": z_obs["proprio"], # Note: no decoder for proprio for now!
         }
-        return obs, diff
-    
+        return obs
+
     def separate_emb(self, z):
         """
         input: z (tensor)
@@ -199,23 +198,16 @@ class VWorldModel(nn.Module):
         z = self.encode(obs, act)
         z_src = z[:, : self.num_hist, :, :]  # (b, num_hist, num_patches, dim)
         z_tgt = z[:, self.num_pred :, :, :]  # (b, num_hist, num_patches, dim)
-        visual_src = obs['visual'][:, : self.num_hist, ...]  # (b, num_hist, 3, img_size, img_size)
         visual_tgt = obs['visual'][:, self.num_pred :, ...]  # (b, num_hist, 3, img_size, img_size)
 
         if self.predictor is not None:
             z_pred = self.predict(z_src)
             if self.decoder is not None:
-                obs_pred, diff_pred = self.decode(
-                    z_pred.detach()
-                )  # recon loss should only affect decoder
+                obs_pred = self.decode(z_pred.detach())  # recon loss should only affect decoder
                 visual_pred = obs_pred['visual']
                 recon_loss_pred = self.decoder_criterion(visual_pred, visual_tgt)
-                decoder_loss_pred = (
-                    recon_loss_pred + self.decoder_latent_loss_weight * diff_pred
-                )
                 loss_components["decoder_recon_loss_pred"] = recon_loss_pred
-                loss_components["decoder_vq_loss_pred"] = diff_pred
-                loss_components["decoder_loss_pred"] = decoder_loss_pred
+                loss_components["decoder_loss_pred"] = recon_loss_pred
             else:
                 visual_pred = None
 
@@ -230,11 +222,11 @@ class VWorldModel(nn.Module):
                     z_tgt[:, :, :, :-(self.proprio_dim + self.action_dim)].detach()
                 )
                 z_proprio_loss = self.emb_criterion(
-                    z_pred[:, :, :, -(self.proprio_dim + self.action_dim): -self.action_dim], 
+                    z_pred[:, :, :, -(self.proprio_dim + self.action_dim): -self.action_dim],
                     z_tgt[:, :, :, -(self.proprio_dim + self.action_dim): -self.action_dim].detach()
                 )
                 z_loss = self.emb_criterion(
-                    z_pred[:, :, :, :-self.action_dim], 
+                    z_pred[:, :, :, :-self.action_dim],
                     z_tgt[:, :, :, :-self.action_dim].detach()
                 )
 
@@ -247,24 +239,13 @@ class VWorldModel(nn.Module):
             z_pred = None
 
         if self.decoder is not None:
-            obs_reconstructed, diff_reconstructed = self.decode(
-                z.detach()
-            )  # recon loss should only affect decoder
+            obs_reconstructed = self.decode(z.detach())  # recon loss should only affect decoder
             visual_reconstructed = obs_reconstructed["visual"]
             recon_loss_reconstructed = self.decoder_criterion(visual_reconstructed, obs['visual'])
-            decoder_loss_reconstructed = (
-                recon_loss_reconstructed
-                + self.decoder_latent_loss_weight * diff_reconstructed
-            )
 
-            loss_components["decoder_recon_loss_reconstructed"] = (
-                recon_loss_reconstructed
-            )
-            loss_components["decoder_vq_loss_reconstructed"] = diff_reconstructed
-            loss_components["decoder_loss_reconstructed"] = (
-                decoder_loss_reconstructed
-            )
-            loss = loss + decoder_loss_reconstructed
+            loss_components["decoder_recon_loss_reconstructed"] = recon_loss_reconstructed
+            loss_components["decoder_loss_reconstructed"] = recon_loss_reconstructed
+            loss = loss + recon_loss_reconstructed
         else:
             visual_reconstructed = None
         loss_components["loss"] = loss
@@ -291,7 +272,7 @@ class VWorldModel(nn.Module):
         """
         num_obs_init = obs_0['visual'].shape[1]
         act_0 = act[:, :num_obs_init]
-        action = act[:, num_obs_init:] 
+        action = act[:, num_obs_init:]
         z = self.encode(obs_0, act_0)
         t = 0
         inc = 1

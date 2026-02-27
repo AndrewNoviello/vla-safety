@@ -316,7 +316,6 @@ ignore_errors = false
 [[tool.mypy.overrides]]
 module = "lerobot.optim.*"
 ignore_errors = false
-ignore_errors = false
 
 [[tool.mypy.overrides]]
 module = "lerobot.model.*"

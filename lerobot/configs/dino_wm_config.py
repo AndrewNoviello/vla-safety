@@ -64,17 +64,13 @@ class DinoWMConfig:
     predictor_emb_dropout: float = 0.0
 
     # ------------------------------------------------------------------
-    # Decoder (VQVAE)
+    # Decoder
     # ------------------------------------------------------------------
     has_decoder: bool = True
     train_decoder: bool = True
-    # Internal channel width of the VQVAE decoder CNN.
     decoder_channel: int = 384
-    decoder_n_embed: int = 2048
     decoder_n_res_block: int = 4
     decoder_n_res_channel: int = 128
-    # Set to False to skip VQ quantisation (plain MSE decoder).
-    decoder_quantize: bool = False
 
     # ------------------------------------------------------------------
     # Training hyper-parameters
