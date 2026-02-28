@@ -18,49 +18,12 @@
 
 import builtins
 from dataclasses import dataclass, field
-from logging import getLogger
 from pathlib import Path
 from typing import Any, ClassVar
 
-from lerobot.types import FeatureType, NormalizationMode, PolicyFeature
+from lerobot.types import NormalizationMode, PolicyFeature
 from lerobot.policies.rtc.configuration_rtc import RTCConfig
-
-# PI05 architecture and flow-matching constants
-DEFAULT_IMAGE_SIZE = 224
-PI05_DEFAULT_PALIGEMMA = "gemma_2b"
-PI05_DEFAULT_ACTION_EXPERT = "gemma_300m"
-PI05_DEFAULT_CHUNK_SIZE = 50
-PI05_DEFAULT_N_ACTION_STEPS = 50
-PI05_DEFAULT_MAX_STATE_DIM = 32
-PI05_DEFAULT_MAX_ACTION_DIM = 32
-PI05_DEFAULT_IMAGE_RESOLUTION = (DEFAULT_IMAGE_SIZE, DEFAULT_IMAGE_SIZE)
-PI05_DEFAULT_DTYPE = "float32"
-PI05_DEFAULT_NUM_INFERENCE_STEPS = 10
-PI05_DEFAULT_TIME_SAMPLING_BETA_ALPHA = 1.5
-PI05_DEFAULT_TIME_SAMPLING_BETA_BETA = 1.0
-PI05_DEFAULT_TIME_SAMPLING_SCALE = 0.999
-PI05_DEFAULT_TIME_SAMPLING_OFFSET = 0.001
-PI05_DEFAULT_MIN_PERIOD = 4e-3
-PI05_DEFAULT_MAX_PERIOD = 4.0
-PI05_DEFAULT_GRADIENT_CHECKPOINTING = False
-PI05_DEFAULT_COMPILE_MODEL = False
-PI05_DEFAULT_COMPILE_MODE = "max-autotune"
-PI05_DEFAULT_FREEZE_VISION_ENCODER = False
-PI05_DEFAULT_TRAIN_EXPERT_ONLY = False
-PI05_DEFAULT_OPTIMIZER_LR = 2.5e-5
-PI05_DEFAULT_OPTIMIZER_BETAS = (0.9, 0.95)
-PI05_DEFAULT_OPTIMIZER_EPS = 1e-8
-PI05_DEFAULT_OPTIMIZER_WEIGHT_DECAY = 0.01
-PI05_DEFAULT_OPTIMIZER_GRAD_CLIP_NORM = 1.0
-PI05_DEFAULT_SCHEDULER_WARMUP_STEPS = 1_000
-PI05_DEFAULT_SCHEDULER_DECAY_STEPS = 30_000
-PI05_DEFAULT_SCHEDULER_DECAY_LR = 2.5e-6
-PI05_DEFAULT_TOKENIZER_MAX_LENGTH = 200
 from lerobot.utils.config_utils import load_config_from_checkpoint, save_config
-from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
-from lerobot.utils.utils import auto_select_torch_device, is_amp_available, is_torch_device_available
-
-logger = getLogger(__name__)
 
 
 @dataclass
@@ -90,33 +53,33 @@ class PI05Config:
     # ------------------------------------------------------------------ #
     # PI05-specific fields                                                #
     # ------------------------------------------------------------------ #
-    paligemma_variant: str = PI05_DEFAULT_PALIGEMMA
-    action_expert_variant: str = PI05_DEFAULT_ACTION_EXPERT
-    dtype: str = PI05_DEFAULT_DTYPE
+    paligemma_variant: str = "gemma_2b"
+    action_expert_variant: str = "gemma_300m"
+    dtype: str = "float32"
 
-    chunk_size: int = PI05_DEFAULT_CHUNK_SIZE
-    n_action_steps: int = PI05_DEFAULT_N_ACTION_STEPS
+    chunk_size: int = 50
+    n_action_steps: int = 50
 
-    max_state_dim: int = PI05_DEFAULT_MAX_STATE_DIM
-    max_action_dim: int = PI05_DEFAULT_MAX_ACTION_DIM
+    max_state_dim: int = 32
+    max_action_dim: int = 32
 
     # Flow matching parameters
-    num_inference_steps: int = PI05_DEFAULT_NUM_INFERENCE_STEPS
-    time_sampling_beta_alpha: float = PI05_DEFAULT_TIME_SAMPLING_BETA_ALPHA
-    time_sampling_beta_beta: float = PI05_DEFAULT_TIME_SAMPLING_BETA_BETA
-    time_sampling_scale: float = PI05_DEFAULT_TIME_SAMPLING_SCALE
-    time_sampling_offset: float = PI05_DEFAULT_TIME_SAMPLING_OFFSET
-    min_period: float = PI05_DEFAULT_MIN_PERIOD
-    max_period: float = PI05_DEFAULT_MAX_PERIOD
+    num_inference_steps: int = 10
+    time_sampling_beta_alpha: float = 1.5
+    time_sampling_beta_beta: float = 1.0
+    time_sampling_scale: float = 0.999
+    time_sampling_offset: float = 0.001
+    min_period: float = 4e-3
+    max_period: float = 4.0
 
     rtc_config: RTCConfig | None = None
 
-    image_resolution: tuple[int, int] = PI05_DEFAULT_IMAGE_RESOLUTION
+    image_resolution: tuple[int, int] = (224, 224)
 
     # Add empty images when no image features are present.
     empty_cameras: int = 0
 
-    tokenizer_max_length: int = PI05_DEFAULT_TOKENIZER_MAX_LENGTH
+    tokenizer_max_length: int = 200
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -126,78 +89,24 @@ class PI05Config:
         }
     )
 
-    gradient_checkpointing: bool = PI05_DEFAULT_GRADIENT_CHECKPOINTING
-    compile_model: bool = PI05_DEFAULT_COMPILE_MODEL
-    compile_mode: str = PI05_DEFAULT_COMPILE_MODE
+    gradient_checkpointing: bool = False
+    compile_model: bool = False
+    compile_mode: str = "max-autotune"
 
-    freeze_vision_encoder: bool = PI05_DEFAULT_FREEZE_VISION_ENCODER
-    train_expert_only: bool = PI05_DEFAULT_TRAIN_EXPERT_ONLY
+    freeze_vision_encoder: bool = False
+    train_expert_only: bool = False
 
     # Optimizer settings
-    optimizer_lr: float = PI05_DEFAULT_OPTIMIZER_LR
-    optimizer_betas: tuple[float, float] = PI05_DEFAULT_OPTIMIZER_BETAS
-    optimizer_eps: float = PI05_DEFAULT_OPTIMIZER_EPS
-    optimizer_weight_decay: float = PI05_DEFAULT_OPTIMIZER_WEIGHT_DECAY
-    optimizer_grad_clip_norm: float = PI05_DEFAULT_OPTIMIZER_GRAD_CLIP_NORM
+    optimizer_lr: float = 2.5e-5
+    optimizer_betas: tuple[float, float] = (0.9, 0.95)
+    optimizer_eps: float = 1e-8
+    optimizer_weight_decay: float = 0.01
+    optimizer_grad_clip_norm: float = 1.0
 
     # Scheduler settings
-    scheduler_warmup_steps: int = PI05_DEFAULT_SCHEDULER_WARMUP_STEPS
-    scheduler_decay_steps: int = PI05_DEFAULT_SCHEDULER_DECAY_STEPS
-    scheduler_decay_lr: float = PI05_DEFAULT_SCHEDULER_DECAY_LR
-
-    def __post_init__(self):
-        if not self.device or not is_torch_device_available(self.device):
-            auto_device = auto_select_torch_device()
-            logger.warning(f"Device '{self.device}' is not available. Switching to '{auto_device}'.")
-            self.device = auto_device.type
-
-        if self.use_amp and not is_amp_available(self.device):
-            logger.warning(
-                f"Automatic Mixed Precision (amp) is not available on device '{self.device}'. Deactivating AMP."
-            )
-            self.use_amp = False
-
-        if self.n_action_steps > self.chunk_size:
-            raise ValueError(
-                f"n_action_steps ({self.n_action_steps}) cannot be greater than chunk_size ({self.chunk_size})"
-            )
-
-        if self.paligemma_variant not in ["gemma_300m", "gemma_2b"]:
-            raise ValueError(f"Invalid paligemma_variant: {self.paligemma_variant}")
-
-        if self.action_expert_variant not in ["gemma_300m", "gemma_2b"]:
-            raise ValueError(f"Invalid action_expert_variant: {self.action_expert_variant}")
-
-        if self.dtype not in ["bfloat16", "float32"]:
-            raise ValueError(f"Invalid dtype: {self.dtype}")
-
-    # ------------------------------------------------------------------ #
-    # Feature helpers                                                     #
-    # ------------------------------------------------------------------ #
-
-    def validate_features(self) -> None:
-        """Validate and set up input/output features."""
-        for i in range(self.empty_cameras):
-            key = OBS_IMAGES + f".empty_camera_{i}"
-            empty_camera = PolicyFeature(
-                type=FeatureType.VISUAL,
-                shape=(3, *self.image_resolution),
-            )
-            self.input_features[key] = empty_camera
-
-        if OBS_STATE not in self.input_features:
-            state_feature = PolicyFeature(
-                type=FeatureType.STATE,
-                shape=(self.max_state_dim,),
-            )
-            self.input_features[OBS_STATE] = state_feature
-
-        if ACTION not in self.output_features:
-            action_feature = PolicyFeature(
-                type=FeatureType.ACTION,
-                shape=(self.max_action_dim,),
-            )
-            self.output_features[ACTION] = action_feature
+    scheduler_warmup_steps: int = 1_000
+    scheduler_decay_steps: int = 30_000
+    scheduler_decay_lr: float = 2.5e-6
 
     @property
     def observation_delta_indices(self) -> None:
@@ -209,39 +118,6 @@ class PI05Config:
 
     @property
     def reward_delta_indices(self) -> None:
-        return None
-
-    @property
-    def robot_state_feature(self) -> PolicyFeature | None:
-        if not self.input_features:
-            return None
-        for ft_name, ft in self.input_features.items():
-            if ft.type is FeatureType.STATE and ft_name == OBS_STATE:
-                return ft
-        return None
-
-    @property
-    def env_state_feature(self) -> PolicyFeature | None:
-        if not self.input_features:
-            return None
-        for _, ft in self.input_features.items():
-            if ft.type is FeatureType.ENV:
-                return ft
-        return None
-
-    @property
-    def image_features(self) -> dict[str, PolicyFeature]:
-        if not self.input_features:
-            return {}
-        return {key: ft for key, ft in self.input_features.items() if ft.type is FeatureType.VISUAL}
-
-    @property
-    def action_feature(self) -> PolicyFeature | None:
-        if not self.output_features:
-            return None
-        for ft_name, ft in self.output_features.items():
-            if ft.type is FeatureType.ACTION and ft_name == ACTION:
-                return ft
         return None
 
     # ------------------------------------------------------------------ #

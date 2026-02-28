@@ -40,8 +40,10 @@ else:
     GemmaForCausalLM = None
     PaliGemmaForConditionalGeneration = None
 
-from lerobot.policies.pi05.configuration_pi05 import DEFAULT_IMAGE_SIZE, PI05Config
+from lerobot.types import FeatureType
+from lerobot.policies.pi05.configuration_pi05 import PI05Config
 from lerobot.utils.config_utils import load_config_from_checkpoint
+from lerobot.utils.utils import auto_select_torch_device, is_amp_available, is_torch_device_available
 from lerobot.policies.pretrained import PreTrainedPolicy, T
 from lerobot.policies.rtc.modeling_rtc import RTCProcessor
 from lerobot.utils.constants import (
@@ -336,7 +338,7 @@ class PaliGemmaWithExpertModel(
         action_expert_config,
         use_adarms=None,
         precision: Literal["bfloat16", "float32"] = "bfloat16",
-        image_size: int = DEFAULT_IMAGE_SIZE,
+        image_size: int = 224,
         freeze_vision_encoder: bool = False,
         train_expert_only: bool = False,
     ):
@@ -911,7 +913,20 @@ class PI05Policy(PreTrainedPolicy):
             config: Policy configuration class instance.
         """
         super().__init__(config)
-        config.validate_features()
+
+        if not config.device or not is_torch_device_available(config.device):
+            auto_device = auto_select_torch_device()
+            logging.getLogger(__name__).warning(
+                f"Device '{config.device}' is not available. Switching to '{auto_device}'."
+            )
+            config.device = auto_device.type
+
+        if config.use_amp and not is_amp_available(config.device):
+            logging.getLogger(__name__).warning(
+                f"Automatic Mixed Precision (amp) is not available on device '{config.device}'. Deactivating AMP."
+            )
+            config.use_amp = False
+
         self.config = config
 
         # Initialize the core PI05 model
@@ -1136,13 +1151,14 @@ class PI05Policy(PreTrainedPolicy):
         # Get device from model parameters
         device = next(self.parameters()).device
 
-        present_img_keys = [key for key in self.config.image_features if key in batch]
-        missing_img_keys = [key for key in self.config.image_features if key not in batch]
+        image_features = {k: v for k, v in self.config.input_features.items() if v.type is FeatureType.VISUAL}
+        present_img_keys = [key for key in image_features if key in batch]
+        missing_img_keys = [key for key in image_features if key not in batch]
 
         if len(present_img_keys) == 0:
             raise ValueError(
                 f"All image features are missing from the batch. At least one expected. "
-                f"(batch: {batch.keys()}) (image_features: {self.config.image_features})"
+                f"(batch: {batch.keys()}) (image_features: {image_features})"
             )
 
         # Preprocess image features present in the batch

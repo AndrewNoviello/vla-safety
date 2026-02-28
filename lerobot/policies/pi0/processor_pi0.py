@@ -32,7 +32,6 @@ def _ensure_newline(batch: dict[str, Any]) -> dict[str, Any]:
         batch["task"] = [t if t.endswith("\n") else f"{t}\n" for t in task]
     return batch
 
-
 def make_pi0_pre_post_processors(
     config: PI0Config,
     dataset_stats: dict[str, dict[str, Any]] | None = None,
@@ -64,22 +63,3 @@ def make_pi0_pre_post_processors(
         return result[ACTION].to("cpu")
 
     return preprocess, postprocess
-
-
-def preprocess(
-    obs: dict[str, Any],
-    task: str | list[str],
-    preprocessor: Callable[[dict[str, Any]], dict[str, Any]],
-) -> dict[str, Any]:
-    """Preprocess a single observation for inference."""
-    batch = dict(obs)
-    batch["task"] = task
-    return preprocessor(batch)
-
-
-def postprocess(
-    action: torch.Tensor,
-    postprocessor: Callable[[torch.Tensor], torch.Tensor],
-) -> torch.Tensor:
-    """Unnormalize and move action to CPU."""
-    return postprocessor(action)

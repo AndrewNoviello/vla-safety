@@ -14,14 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .configuration_pi05 import (
-    PI05Config,
-    PI05_DEFAULT_CHUNK_SIZE,
-    PI05_DEFAULT_IMAGE_RESOLUTION,
-    PI05_DEFAULT_MAX_ACTION_DIM,
-    PI05_DEFAULT_MAX_STATE_DIM,
-    PI05_DEFAULT_N_ACTION_STEPS,
-)
+from .configuration_pi05 import PI05Config
 from .modeling_pi05 import PI05Policy
 from .processor_pi05 import make_pi05_pre_post_processors
 
@@ -29,9 +22,4 @@ __all__ = [
     "PI05Config",
     "PI05Policy",
     "make_pi05_pre_post_processors",
-    "PI05_DEFAULT_CHUNK_SIZE",
-    "PI05_DEFAULT_IMAGE_RESOLUTION",
-    "PI05_DEFAULT_MAX_ACTION_DIM",
-    "PI05_DEFAULT_MAX_STATE_DIM",
-    "PI05_DEFAULT_N_ACTION_STEPS",
 ]

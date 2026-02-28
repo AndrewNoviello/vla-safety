@@ -85,22 +85,3 @@ def make_pi05_pre_post_processors(
         return result[ACTION].to("cpu")
 
     return preprocess, postprocess
-
-
-def preprocess(
-    obs: dict[str, Any],
-    task: str | list[str],
-    preprocessor: Callable[[dict[str, Any]], dict[str, Any]],
-) -> dict[str, Any]:
-    """Preprocess a single observation for inference."""
-    batch = dict(obs)
-    batch["task"] = task
-    return preprocessor(batch)
-
-
-def postprocess(
-    action: torch.Tensor,
-    postprocessor: Callable[[torch.Tensor], torch.Tensor],
-) -> torch.Tensor:
-    """Unnormalize and move action to CPU."""
-    return postprocessor(action)

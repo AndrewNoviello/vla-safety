@@ -43,31 +43,9 @@ else:
 from dataclasses import dataclass
 
 from lerobot.types import FeatureType, PolicyFeature
-from lerobot.policies.pi0.configuration_pi0 import (
-    DEFAULT_IMAGE_SIZE,
-    PI0Config,
-    PI0_DEFAULT_ACTION_EXPERT,
-    PI0_DEFAULT_CHUNK_SIZE,
-    PI0_DEFAULT_COMPILE_MODE,
-    PI0_DEFAULT_COMPILE_MODEL,
-    PI0_DEFAULT_DTYPE,
-    PI0_DEFAULT_FREEZE_VISION_ENCODER,
-    PI0_DEFAULT_GRADIENT_CHECKPOINTING,
-    PI0_DEFAULT_IMAGE_RESOLUTION,
-    PI0_DEFAULT_MAX_ACTION_DIM,
-    PI0_DEFAULT_MAX_PERIOD,
-    PI0_DEFAULT_MAX_STATE_DIM,
-    PI0_DEFAULT_MIN_PERIOD,
-    PI0_DEFAULT_N_ACTION_STEPS,
-    PI0_DEFAULT_NUM_INFERENCE_STEPS,
-    PI0_DEFAULT_PALIGEMMA,
-    PI0_DEFAULT_TIME_SAMPLING_BETA_ALPHA,
-    PI0_DEFAULT_TIME_SAMPLING_BETA_BETA,
-    PI0_DEFAULT_TIME_SAMPLING_OFFSET,
-    PI0_DEFAULT_TIME_SAMPLING_SCALE,
-    PI0_DEFAULT_TRAIN_EXPERT_ONLY,
-)
+from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.pretrained import PreTrainedPolicy, T
+from lerobot.utils.utils import auto_select_torch_device, is_amp_available, is_torch_device_available
 from lerobot.policies.rtc.modeling_rtc import RTCProcessor
 from lerobot.utils.constants import (
     ACTION,
@@ -333,26 +311,26 @@ class GemmaConfig:  # see openpi `gemma.py: Config`
 class PI0ArchParams:
     """Architecture and flow-matching params for PI0Pytorch (no config object)."""
 
-    paligemma_variant: str = PI0_DEFAULT_PALIGEMMA
-    action_expert_variant: str = PI0_DEFAULT_ACTION_EXPERT
-    dtype: str = PI0_DEFAULT_DTYPE
-    chunk_size: int = PI0_DEFAULT_CHUNK_SIZE
-    n_action_steps: int = PI0_DEFAULT_N_ACTION_STEPS
-    max_state_dim: int = PI0_DEFAULT_MAX_STATE_DIM
-    max_action_dim: int = PI0_DEFAULT_MAX_ACTION_DIM
-    image_resolution: tuple[int, int] = PI0_DEFAULT_IMAGE_RESOLUTION
-    num_inference_steps: int = PI0_DEFAULT_NUM_INFERENCE_STEPS
-    time_sampling_beta_alpha: float = PI0_DEFAULT_TIME_SAMPLING_BETA_ALPHA
-    time_sampling_beta_beta: float = PI0_DEFAULT_TIME_SAMPLING_BETA_BETA
-    time_sampling_scale: float = PI0_DEFAULT_TIME_SAMPLING_SCALE
-    time_sampling_offset: float = PI0_DEFAULT_TIME_SAMPLING_OFFSET
-    min_period: float = PI0_DEFAULT_MIN_PERIOD
-    max_period: float = PI0_DEFAULT_MAX_PERIOD
-    gradient_checkpointing: bool = PI0_DEFAULT_GRADIENT_CHECKPOINTING
-    compile_model: bool = PI0_DEFAULT_COMPILE_MODEL
-    compile_mode: str = PI0_DEFAULT_COMPILE_MODE
-    freeze_vision_encoder: bool = PI0_DEFAULT_FREEZE_VISION_ENCODER
-    train_expert_only: bool = PI0_DEFAULT_TRAIN_EXPERT_ONLY
+    paligemma_variant: str = "gemma_2b"
+    action_expert_variant: str = "gemma_300m"
+    dtype: str = "float32"
+    chunk_size: int = 50
+    n_action_steps: int = 50
+    max_state_dim: int = 32
+    max_action_dim: int = 32
+    image_resolution: tuple[int, int] = (224, 224)
+    num_inference_steps: int = 10
+    time_sampling_beta_alpha: float = 1.5
+    time_sampling_beta_beta: float = 1.0
+    time_sampling_scale: float = 0.999
+    time_sampling_offset: float = 0.001
+    min_period: float = 4e-3
+    max_period: float = 4.0
+    gradient_checkpointing: bool = False
+    compile_model: bool = False
+    compile_mode: str = "max-autotune"
+    freeze_vision_encoder: bool = False
+    train_expert_only: bool = False
     rtc_config: None = None  # RTC disabled by default
 
 
@@ -391,7 +369,7 @@ class PaliGemmaWithExpertModel(
         action_expert_config,
         use_adarms=None,
         precision: Literal["bfloat16", "float32"] = "bfloat16",
-        image_size: int = DEFAULT_IMAGE_SIZE,
+        image_size: int = 224,
         freeze_vision_encoder: bool = False,
         train_expert_only: bool = False,
     ):
@@ -984,7 +962,19 @@ class PI0Policy(PreTrainedPolicy):
 
     def __init__(self, config: PI0Config, **kwargs):
         super().__init__(config)
-        config.validate_features()
+
+        if not config.device or not is_torch_device_available(config.device):
+            auto_device = auto_select_torch_device()
+            logging.getLogger(__name__).warning(
+                f"Device '{config.device}' is not available. Switching to '{auto_device}'."
+            )
+            config.device = auto_device.type
+
+        if config.use_amp and not is_amp_available(config.device):
+            logging.getLogger(__name__).warning(
+                f"Automatic Mixed Precision (amp) is not available on device '{config.device}'. Deactivating AMP."
+            )
+            config.use_amp = False
 
         # Build arch params for PI0Pytorch
         params = PI0ArchParams(
@@ -1031,11 +1021,6 @@ class PI0Policy(PreTrainedPolicy):
             model_value = getattr(self, "model", None)
             if model_value is not None:
                 model_value.rtc_processor = self.rtc_processor
-
-    @property
-    def image_features(self) -> dict[str, PolicyFeature]:
-        """Visual input features from config."""
-        return self.config.image_features
 
     @property
     def image_resolution(self) -> tuple[int, int]:
@@ -1099,17 +1084,17 @@ class PI0Policy(PreTrainedPolicy):
                 if OBS_STATE not in input_features:
                     input_features[OBS_STATE] = PolicyFeature(
                         type=FeatureType.STATE,
-                        shape=(PI0_DEFAULT_MAX_STATE_DIM,),
+                        shape=(32,),
                     )
                 if ACTION not in output_features:
                     output_features[ACTION] = PolicyFeature(
                         type=FeatureType.ACTION,
-                        shape=(PI0_DEFAULT_MAX_ACTION_DIM,),
+                        shape=(32,),
                     )
                 if not any(ft.type == FeatureType.VISUAL for ft in input_features.values()):
                     input_features[f"{OBS_IMAGES}.top"] = PolicyFeature(
                         type=FeatureType.VISUAL,
-                        shape=(3, *PI0_DEFAULT_IMAGE_RESOLUTION),
+                        shape=(3, 224, 224),
                     )
                 config = PI0Config(
                     input_features=input_features,
@@ -1267,13 +1252,14 @@ class PI0Policy(PreTrainedPolicy):
         # Get device from model parameters
         device = next(self.parameters()).device
 
-        present_img_keys = [key for key in self.image_features if key in batch]
-        missing_img_keys = [key for key in self.image_features if key not in batch]
+        image_features = {k: v for k, v in self.config.input_features.items() if v.type is FeatureType.VISUAL}
+        present_img_keys = [key for key in image_features if key in batch]
+        missing_img_keys = [key for key in image_features if key not in batch]
 
         if len(present_img_keys) == 0:
             raise ValueError(
                 f"All image features are missing from the batch. At least one expected. "
-                f"(batch: {batch.keys()}) (image_features: {self.image_features})"
+                f"(batch: {batch.keys()}) (image_features: {image_features})"
             )
 
         for key in present_img_keys:

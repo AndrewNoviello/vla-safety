@@ -39,9 +39,10 @@ from torch.optim import Optimizer
 from lerobot.types import FeatureType, NormalizationMode
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.augmentation import image_transforms
-from lerobot.datasets.utils import cycle
+from lerobot.datasets.utils import cycle, dataset_to_policy_features
 from lerobot.optim import make_optimizer_and_scheduler
-from lerobot.policies.factory import make_policy
+from lerobot.policies.factory import make_configuration, make_policy
+from lerobot.types import FeatureType
 from lerobot.policies.pi0.processor_pi0 import _ensure_newline
 from lerobot.policies.pretrained import PreTrainedPolicy
 from transformers import AutoTokenizer
@@ -209,13 +210,18 @@ def train():
     # --- Policy ---
     if is_main_process:
         logging.info("Creating policy")
-    policy = make_policy(
-        policy_type=POLICY_TYPE,
-        ds_meta=dataset,
+    _features = dataset_to_policy_features(dataset.features)
+    _input_features = {k: v for k, v in _features.items() if v.type is not FeatureType.ACTION}
+    _output_features = {k: v for k, v in _features.items() if v.type is FeatureType.ACTION}
+    _config = make_configuration(
+        POLICY_TYPE,
+        _input_features,
+        _output_features,
         pretrained_path=PRETRAINED_PATH,
         use_peft=PEFT_KWARGS is not None,
-        gradient_checkpointing=True
+        gradient_checkpointing=True,
     )
+    policy = make_policy(_config, dataset_stats=dataset.stats, dataset_meta=dataset)
 
     is_peft = PEFT_KWARGS is not None
     if is_peft:
