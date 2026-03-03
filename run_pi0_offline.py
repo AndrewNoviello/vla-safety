@@ -152,7 +152,7 @@ def run_inference(
     device: torch.device,
     use_amp: bool = False,
 ):
-    """Run one inference step: observation (numpy) -> preprocess -> policy -> postprocess -> action."""
+    """Run one inference step: observation (numpy) -> preprocess -> policy -> postprocess -> action chunk."""
     observation = dict(observation)
     print('observation: ' + str(observation))
     print('input features: ' + str(policy.input_features))
@@ -169,9 +169,9 @@ def run_inference(
         else torch.amp.autocast("cpu", enabled=False)
     )
     with torch.inference_mode(), ctx:
-        action = policy.select_action(observation)
-    action = postprocessor(action)
-    return action
+        action_chunk = policy.predict_action_chunk(observation)
+    action_chunk = postprocessor(action_chunk)
+    return action_chunk
 
 
 def main():
@@ -284,15 +284,17 @@ def main():
     )
 
     action_np = action.numpy() if isinstance(action, torch.Tensor) else action
-    print(f"Action shape: {action_np.shape}")
+    print(f"Action chunk shape: {action_np.shape}")
     if action_np.ndim == 3:
-        print(f"Action (first step): {action_np[0, 0, :]}")
+        print(f"Action chunk (first step): {action_np[0, 0, :]}")
+        print(f"Action chunk (last step):  {action_np[0, -1, :]}")
     else:
         print(f"Action (first step): {action_np[0, :]}")
 
     if args.output:
-        np.save(args.output, action_np)
-        print(f"Saved action to {args.output}")
+        to_save = action_np.squeeze(0) if action_np.ndim == 3 and action_np.shape[0] == 1 else action_np
+        np.save(args.output, to_save)
+        print(f"Saved action chunk to {args.output}")
 
     return action_np
 

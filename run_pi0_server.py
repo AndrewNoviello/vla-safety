@@ -41,11 +41,18 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from lerobot.datasets.utils import cast_stats_to_numpy, load_json
 from lerobot.types import FeatureType
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.pi0 import PI0Policy
 from lerobot.policies.utils import prepare_observation_for_inference
 from lerobot.utils.constants import OBS_STATE
+
+STATS_PATH = Path("/workspace/vla-safety/stats.json")
+DEFAULT_PROMPT = (
+    "pick up the middle domino from the three domino row and place it flat "
+    "on top of the other two dominos to form an arch"
+)
 
 # -----------------------------------------------------------------------------
 # Image and observation helpers (no disk I/O for server path)
@@ -140,7 +147,7 @@ def run_inference(
         else torch.amp.autocast("cpu", enabled=False)
     )
     with torch.inference_mode(), ctx:
-        action = policy.select_action(observation)
+        action = policy.predict_action_chunk(observation)
     action = postprocessor(action)
     return action
 
@@ -155,7 +162,7 @@ app = FastAPI(
 )
 
 # Loaded at startup
-MODEL_ID = "lerobot/pi0_base"
+MODEL_ID = "AndrewNoviello/vla-safety-task-1"
 policy = None
 preprocessor = None
 postprocessor = None
@@ -180,8 +187,14 @@ def startup():
     policy.eval()
     policy.config.device = device
     image_size = tuple(policy.config.image_resolution)
+    dataset_stats = None
+    if STATS_PATH.exists():
+        dataset_stats = cast_stats_to_numpy(load_json(STATS_PATH))
+        print(f"Loaded dataset stats from {STATS_PATH}")
+    else:
+        print(f"Stats file not found at {STATS_PATH}, using no normalization")
     preprocessor, postprocessor = make_pre_post_processors(
-        policy_type="pi0", policy_cfg=policy.config, dataset_stats=None
+        policy_type="pi0", policy_cfg=policy.config, dataset_stats=dataset_stats
     )
     print("Policy loaded. Ready for /predict.")
 
@@ -192,7 +205,7 @@ def startup():
 
 
 class PredictJSONRequest(BaseModel):
-    prompt: str = Field(..., description="Text instruction for the policy")
+    prompt: str | None = Field(None, description="Text instruction for the policy (uses default if omitted)")
     images: list[str] | None = Field(None, description="Base64-encoded images (1 or N)")
     proprio: list[float] | None = Field(None, description="State vector (floats)")
 
@@ -212,12 +225,13 @@ def health():
     return {"status": "ok", "model": MODEL_ID, "device": str(device)}
 
 
-def _run_and_return(prompt: str, image_arrays: list[np.ndarray], proprio: list[float] | None):
+def _run_and_return(prompt: str | None, image_arrays: list[np.ndarray], proprio: list[float] | None):
     if not image_arrays:
         raise HTTPException(status_code=400, detail="At least one image is required.")
+    task = prompt if prompt else DEFAULT_PROMPT
     obs = build_observation_from_arrays(policy, image_arrays, proprio, image_size)
     action = run_inference(
-        policy, preprocessor, postprocessor, obs, task=prompt, device=device, use_amp=use_amp
+        policy, preprocessor, postprocessor, obs, task=task, device=device, use_amp=use_amp
     )
     action_np = action.numpy() if isinstance(action, torch.Tensor) else action
     return {"action": action_np.tolist(), "shape": list(action_np.shape)}
@@ -225,7 +239,7 @@ def _run_and_return(prompt: str, image_arrays: list[np.ndarray], proprio: list[f
 
 @app.post("/predict")
 async def predict(
-    prompt: str = Form(..., description="Text instruction"),
+    prompt: str | None = Form(None, description="Text instruction (uses default if omitted)"),
     image_0: UploadFile = File(..., description="First image (required)"),
     image_1: UploadFile | None = File(None),
     image_2: UploadFile | None = File(None),
