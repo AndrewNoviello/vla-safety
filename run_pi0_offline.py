@@ -37,11 +37,16 @@ if str(_SCRIPT_DIR) not in sys.path:
 import numpy as np
 import torch
 
+from lerobot.datasets.utils import cast_stats_to_numpy, load_json
 from lerobot.types import FeatureType
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.pi0 import PI0Policy
+from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.utils import prepare_observation_for_inference
 from lerobot.utils.constants import OBS_STATE
+
+# Hardcoded path to dataset stats for normalization (state/action mean-std)
+STATS_PATH = Path("/workspace/vla-safety/stats.json")
 
 
 def load_image_as_numpy(path: str | Path, size: tuple[int, int] = (224, 224)) -> np.ndarray:
@@ -178,13 +183,13 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="lerobot/pi0_base",
+        default="AndrewNoviello/vla-safety-task-1",
         help="Pretrained model id or path (default: lerobot/pi0_base)",
     )
     parser.add_argument(
         "--prompt",
         type=str,
-        default="Pick up the red block.",
+        default="pick up the middle domino from the three domino row and place it flat on top of the other two dominos to form an arch",
         help="Text instruction for the policy",
     )
     parser.add_argument(
@@ -218,6 +223,11 @@ def main():
         action="store_true",
         help="Disable automatic mixed precision on CUDA",
     )
+    parser.add_argument(
+        "--no-compile",
+        action="store_true",
+        help="Disable torch.compile() on the model (faster load, slower inference)",
+    )
     args = parser.parse_args()
 
     if args.device is not None:
@@ -231,13 +241,26 @@ def main():
     print(f"Using device: {device}")
 
     print(f"Loading policy: {args.model}")
-    policy = PI0Policy.from_pretrained(args.model)
+    if args.no_compile:
+        config = PI0Config.from_pretrained(args.model)
+        config.compile_model = False
+        policy = PI0Policy.from_pretrained(args.model, config=config)
+        print("Model loaded without torch.compile()")
+    else:
+        policy = PI0Policy.from_pretrained(args.model)
     policy.to(device)
     policy.eval()
     policy.config.device = str(device)
 
+    dataset_stats = None
+    if STATS_PATH.exists():
+        dataset_stats = cast_stats_to_numpy(load_json(STATS_PATH))
+        print(f"Loaded dataset stats from {STATS_PATH}")
+    else:
+        print(f"Stats file not found at {STATS_PATH}, using no normalization")
+
     preprocessor, postprocessor = make_pre_post_processors(
-        policy_type="pi0", policy_cfg=policy.config, dataset_stats=None
+        policy_type="pi0", policy_cfg=policy.config, dataset_stats=dataset_stats
     )
 
     observation = build_observation(

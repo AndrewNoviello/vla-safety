@@ -71,14 +71,16 @@ from models.proprio import ProprioceptiveEmbedding  # noqa: E402
 # =====================================================================
 
 CFG = DinoWMConfig(
-    dataset_repo_id="lerobot/pusht_image",
+    dataset_repo_id="AndrewNoviello/domino-world-v1",
     dataset_root=None,
     dataset_episodes=None,
 
     # Temporal window
-    num_hist=3,
+    # frameskip=3 subsamples 30fps → effective 10fps so consecutive frames
+    # show meaningful motion from the SO101 arm.
+    num_hist=2,
     num_pred=1,
-    frameskip=1,
+    frameskip=3,
 
     # Image / encoder
     img_size=224,
@@ -108,9 +110,9 @@ CFG = DinoWMConfig(
     decoder_n_res_block=4,
     decoder_n_res_channel=128,
 
-    # Training
+    # Training — smaller batch because video decoding + 1920×1080→224 resize
     steps=100_000,
-    batch_size=32,
+    batch_size=8,
     num_workers=4,
     seed=42,
     encoder_lr=1e-6,
@@ -127,6 +129,9 @@ CFG = DinoWMConfig(
     wandb_enable=False,
     wandb_project="dino_wm",
     wandb_entity=None,
+
+    # Upload checkpoints to this HuggingFace model repo after training
+    hf_model_repo_id="AndrewNoviello/domino-world-wm",
 )
 
 # =====================================================================
@@ -147,20 +152,16 @@ DINO_WM_NORM_MAP = {
 # =====================================================================
 
 def _detect_image_key(features: dict) -> str:
-    """Return the first image-dtype observation key in the dataset."""
-    # Prefer exact "observation.image", then any "observation.images.*"
-    preferred = ("observation.image",)
+    """Return the first image- or video-dtype observation key in the dataset."""
+    preferred = ("observation.image", "observation.images.front")
     for k in preferred:
-        if k in features and features[k]["dtype"] == "image":
+        if k in features and features[k]["dtype"] in ("image", "video"):
             return k
     for k, v in features.items():
-        if k.startswith("observation.") and v["dtype"] == "image":
+        if k.startswith("observation.") and v["dtype"] in ("image", "video"):
             return k
     raise ValueError(
-        "No image-dtype observation key found in dataset features. "
-        "This script currently supports datasets with images stored as "
-        "parquet (dtype='image'). For video-stored datasets (dtype='video') "
-        "you need multi-frame video decoding support."
+        "No image or video observation key found in dataset features."
     )
 
 
@@ -178,9 +179,9 @@ def _make_delta_timestamps(
 
     delta_ts: dict[str, list[float]] = {}
 
-    # Image features (only parquet-stored "image" dtype)
+    # Image features (parquet "image" dtype and video "video" dtype)
     for k, v in features.items():
-        if k.startswith("observation.") and v["dtype"] == "image":
+        if k.startswith("observation.") and v["dtype"] in ("image", "video"):
             delta_ts[k] = timestamps
 
     # State and action
@@ -637,6 +638,18 @@ def train(cfg: DinoWMConfig = CFG) -> None:
         logging.info("Training complete.")
 
     accelerator.end_training()
+
+    if is_main and cfg.hf_model_repo_id:
+        from huggingface_hub import HfApi
+        logging.info(f"Uploading checkpoints to HuggingFace Hub: {cfg.hf_model_repo_id}")
+        api = HfApi()
+        api.create_repo(cfg.hf_model_repo_id, repo_type="model", exist_ok=True)
+        api.upload_folder(
+            folder_path=cfg.output_dir,
+            repo_id=cfg.hf_model_repo_id,
+            repo_type="model",
+        )
+        logging.info("Upload complete.")
 
 
 def main() -> None:

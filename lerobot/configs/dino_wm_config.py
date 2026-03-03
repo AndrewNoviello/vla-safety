@@ -96,3 +96,6 @@ class DinoWMConfig:
     wandb_project: str = "dino_wm"
     wandb_entity: Optional[str] = None
     wandb_notes: Optional[str] = None
+
+    # HuggingFace Hub — upload checkpoints here after training (set to None to skip)
+    hf_model_repo_id: Optional[str] = None

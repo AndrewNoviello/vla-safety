@@ -246,12 +246,18 @@ class LeRobotDataset(torch.utils.data.Dataset):
         video_keys = self._keys_by_dtype("video")
         if video_keys:
             ep = self._episodes[ep_idx]
-            timestamp = float(item["timestamp"])
+            base_timestamp = float(item["timestamp"])
             for key in video_keys:
                 from_ts = ep[f"videos/{key}/from_timestamp"]
-                abs_timestamp = from_ts + timestamp
                 video_path = self._get_video_path(ep_idx, key)
-                item[key] = self._decode_video_frame(video_path, abs_timestamp)
+                if self.delta_indices is not None and key in self.delta_indices:
+                    frames = []
+                    for delta_idx in self.delta_indices[key]:
+                        abs_ts = from_ts + base_timestamp + delta_idx / self.fps
+                        frames.append(self._decode_video_frame(video_path, abs_ts))
+                    item[key] = torch.stack(frames)  # (T, C, H, W)
+                else:
+                    item[key] = self._decode_video_frame(video_path, from_ts + base_timestamp)
 
         if self.image_transforms is not None:
             for cam in self._keys_by_dtype("image", "video"):
