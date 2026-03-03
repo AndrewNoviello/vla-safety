@@ -237,7 +237,11 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         if self.delta_indices is not None:
             query_indices, padding = self._get_query_indices(abs_idx, ep_idx)
-            query_result = self._query_hf_dataset(query_indices)
+            # Video keys live in mp4 files, not parquet columns — skip them here.
+            # The multi-frame video decode block below handles them via delta_indices.
+            video_key_set = set(self._keys_by_dtype("video"))
+            parquet_query_indices = {k: v for k, v in query_indices.items() if k not in video_key_set}
+            query_result = self._query_hf_dataset(parquet_query_indices)
             item = {**item, **padding}
             for key, val in query_result.items():
                 item[key] = val

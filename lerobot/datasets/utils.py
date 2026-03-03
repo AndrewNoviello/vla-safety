@@ -361,10 +361,10 @@ def get_safe_version(repo_id: str, version: str | packaging.version.Version) -> 
     hub_versions = get_repo_versions(repo_id)
 
     if not hub_versions:
-        raise RevisionNotFoundError(
-            f"Your dataset must be tagged with a codebase version. "
-            f"See docs for tagging '{repo_id}'."
+        logging.warning(
+            f"No version tags found for '{repo_id}'. Falling back to 'main'."
         )
+        return "main"
 
     if target_version in hub_versions:
         return f"v{target_version}"

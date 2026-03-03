@@ -110,10 +110,10 @@ CFG = DinoWMConfig(
     decoder_n_res_block=4,
     decoder_n_res_channel=128,
 
-    # Training — smaller batch because video decoding + 1920×1080→224 resize
-    steps=100_000,
-    batch_size=8,
-    num_workers=4,
+    # Training — larger batch/workers for better GPU utilization (A40 has headroom)
+    steps=25_000,
+    batch_size=24,
+    num_workers=6,
     seed=42,
     encoder_lr=1e-6,
     predictor_lr=5e-4,
