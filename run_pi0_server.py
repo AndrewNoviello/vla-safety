@@ -45,6 +45,7 @@ from lerobot.datasets.utils import cast_stats_to_numpy, load_json
 from lerobot.types import FeatureType
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.pi0 import PI0Policy
+from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.utils import prepare_observation_for_inference
 from lerobot.utils.constants import OBS_STATE
 
@@ -182,7 +183,9 @@ def startup():
         device = torch.device("cpu")
     use_amp = device.type == "cuda"
     print(f"Loading policy: {MODEL_ID} on {device}")
-    policy = PI0Policy.from_pretrained(MODEL_ID)
+    config = PI0Config.from_pretrained(MODEL_ID)
+    config.compile_model = False  # Explicitly disable torch.compile for server inference
+    policy = PI0Policy.from_pretrained(MODEL_ID, config=config)
     policy.to(device)
     policy.eval()
     policy.config.device = device
