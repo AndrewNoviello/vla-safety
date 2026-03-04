@@ -513,6 +513,7 @@ def train(cfg: DinoWMConfig = CFG) -> None:
         pin_memory=device.type == "cuda",
         drop_last=False,
         prefetch_factor=2 if cfg.num_workers > 0 else None,
+        persistent_workers=cfg.num_workers > 0,  # keep workers alive so LRU container cache survives across epochs
     )
 
     # Prepare with accelerate

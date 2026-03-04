@@ -1,3 +1,6 @@
+import collections
+import os
+import time as _time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -23,6 +26,49 @@ from lerobot.datasets.utils import (
     resolve_delta_timestamps,
 )
 from lerobot.utils.constants import HF_LEROBOT_HOME
+
+# ---------------------------------------------------------------------------
+# Per-worker LRU cache of open av.InputContainer objects.
+# Module-level dicts are process-local, so each DataLoader worker has its own
+# copy — no cross-worker state, no locks needed.
+# ---------------------------------------------------------------------------
+_VIDEO_CONTAINER_CACHE: dict[int, collections.OrderedDict] = {}
+_VIDEO_CONTAINER_CACHE_MAX_SIZE: int = 4  # max open containers per worker
+
+# Set LEROBOT_PROFILE_DECODE=1 to print per-window decode timing to stdout.
+_PROFILE_DECODE: bool = os.environ.get("LEROBOT_PROFILE_DECODE", "0") == "1"
+
+
+def _get_worker_id() -> int:
+    """Return the current DataLoader worker id, or -1 in the main process."""
+    info = torch.utils.data.get_worker_info()
+    return info.id if info is not None else -1
+
+
+def _get_cached_container(video_path: "Path"):
+    """Return a cached open av.InputContainer for video_path (per-worker LRU).
+
+    Opens a new container on cache miss; evicts the LRU entry when the cache
+    exceeds _VIDEO_CONTAINER_CACHE_MAX_SIZE. Caller must NOT close the container.
+    """
+    import av
+    worker_id = _get_worker_id()
+    cache = _VIDEO_CONTAINER_CACHE.setdefault(worker_id, collections.OrderedDict())
+    key = str(video_path)
+    if key in cache:
+        cache.move_to_end(key)
+        return cache[key]
+    container = av.open(str(video_path))
+    cache[key] = container
+    cache.move_to_end(key)
+    while len(cache) > _VIDEO_CONTAINER_CACHE_MAX_SIZE:
+        _, old = cache.popitem(last=False)
+        try:
+            old.close()
+        except Exception:
+            pass
+    return container
+
 
 CODEBASE_VERSION = "v3.0"
 
@@ -180,6 +226,97 @@ class LeRobotDataset(torch.utils.data.Dataset):
         img = best_frame.to_ndarray(format="rgb24")  # (H, W, C) uint8
         return torch.from_numpy(img).permute(2, 0, 1).float() / 255.0  # (C, H, W) float [0,1]
 
+    @staticmethod
+    def _decode_video_frames_window(
+        video_path: "Path",
+        timestamps: list[float],
+        use_cache: bool = False,
+    ) -> list[torch.Tensor]:
+        """Decode multiple frames from one video file in a single open+seek+decode pass.
+
+        Opens the container once, seeks to 0.1s before the earliest timestamp,
+        then decodes forward collecting the best-match frame for each target.
+        Returns tensors in the same order as the input timestamps list.
+
+        Args:
+            video_path: Path to the .mp4 file.
+            timestamps: Target timestamps in seconds (need not be sorted).
+            use_cache: If True, use the per-worker LRU container cache rather
+                than opening/closing a fresh container. Only safe inside a
+                DataLoader worker (persistent_workers=True recommended).
+        """
+        import av
+
+        if not timestamps:
+            return []
+
+        # Sort timestamps but remember original positions to restore output order.
+        order = sorted(range(len(timestamps)), key=lambda i: timestamps[i])
+        sorted_ts = [timestamps[i] for i in order]
+        n = len(sorted_ts)
+
+        t0 = _time.perf_counter() if _PROFILE_DECODE else 0.0
+
+        # Open (or retrieve cached) container, then seek to just before first target.
+        if use_cache:
+            container = _get_cached_container(video_path)
+        else:
+            container = av.open(str(video_path))
+
+        stream = container.streams.video[0]
+        tb = float(stream.time_base)
+        # Same 0.1s pre-seek margin as _decode_video_frame to land before a keyframe.
+        seek_pts = int(max(0.0, sorted_ts[0] - 0.1) / tb)
+        container.seek(seek_pts, stream=stream, backward=True, any_frame=False)
+
+        # Single forward decode pass: collect best-match frame for each target.
+        # best[j] = [min_diff, best_av_frame] for sorted_ts[j]
+        best: list[list] = [[float("inf"), None] for _ in range(n)]
+        cursor = 0  # index into sorted_ts of the earliest unsettled target
+
+        for frame in container.decode(stream):
+            frame_ts = float(frame.pts * tb)
+            for j in range(cursor, n):
+                diff = abs(frame_ts - sorted_ts[j])
+                if diff < best[j][0]:
+                    best[j][0] = diff
+                    best[j][1] = frame
+            # Advance cursor past targets now more than 0.5s behind this frame
+            # (same stop sentinel as _decode_video_frame).
+            while cursor < n and frame_ts > sorted_ts[cursor] + 0.5:
+                cursor += 1
+            if cursor >= n:
+                break
+
+        if not use_cache:
+            container.close()
+
+        if _PROFILE_DECODE:
+            elapsed_ms = (_time.perf_counter() - t0) * 1000
+            span = sorted_ts[-1] - sorted_ts[0] if n > 1 else 0.0
+            print(
+                f"[DECODE] worker={_get_worker_id()} file={video_path.name} "
+                f"n={n} span={span:.3f}s elapsed={elapsed_ms:.1f}ms",
+                flush=True,
+            )
+
+        # Convert frames to tensors, then restore the original (unsorted) order.
+        sorted_tensors: list[torch.Tensor] = []
+        for j in range(n):
+            if best[j][1] is None:
+                raise ValueError(
+                    f"No frame found near timestamp {sorted_ts[j]:.4f}s in {video_path}"
+                )
+            img = best[j][1].to_ndarray(format="rgb24")  # (H, W, C) uint8
+            sorted_tensors.append(
+                torch.from_numpy(img).permute(2, 0, 1).float() / 255.0  # (C, H, W) float32
+            )
+
+        result: list[torch.Tensor] = [None] * n  # type: ignore[list-item]
+        for sorted_pos, orig_pos in enumerate(order):
+            result[orig_pos] = sorted_tensors[sorted_pos]
+        return result
+
     def _load_hf_dataset(self) -> datasets.Dataset:
         hf_features = get_hf_features_from_features(self.features)
         hf_dataset = load_nested_dataset(self.root / "data", features=hf_features, episodes=self.episodes)
@@ -246,22 +383,27 @@ class LeRobotDataset(torch.utils.data.Dataset):
             for key, val in query_result.items():
                 item[key] = val
 
-        # Decode video frames for video-dtype features
+        # Decode video frames for video-dtype features — one open+seek per camera per sample.
         video_keys = self._keys_by_dtype("video")
         if video_keys:
             ep = self._episodes[ep_idx]
             base_timestamp = float(item["timestamp"])
+            # Use per-worker container cache only inside a DataLoader worker process.
+            _in_worker = torch.utils.data.get_worker_info() is not None
             for key in video_keys:
                 from_ts = ep[f"videos/{key}/from_timestamp"]
                 video_path = self._get_video_path(ep_idx, key)
                 if self.delta_indices is not None and key in self.delta_indices:
-                    frames = []
-                    for delta_idx in self.delta_indices[key]:
-                        abs_ts = from_ts + base_timestamp + delta_idx / self.fps
-                        frames.append(self._decode_video_frame(video_path, abs_ts))
-                    item[key] = torch.stack(frames)  # (T, C, H, W)
+                    timestamps = [
+                        from_ts + base_timestamp + delta_idx / self.fps
+                        for delta_idx in self.delta_indices[key]
+                    ]
                 else:
-                    item[key] = self._decode_video_frame(video_path, from_ts + base_timestamp)
+                    timestamps = [from_ts + base_timestamp]
+                frames = self._decode_video_frames_window(
+                    video_path, timestamps, use_cache=_in_worker
+                )
+                item[key] = torch.stack(frames) if len(frames) > 1 else frames[0]
 
         if self.image_transforms is not None:
             for cam in self._keys_by_dtype("image", "video"):
