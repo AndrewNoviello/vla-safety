@@ -1,4 +1,3 @@
-# Adapted from https://github.com/facebookresearch/ijepa/blob/main/src/models/vision_transformer.py 
 import numpy as np
 import torch.nn as nn
 

@@ -1,5 +1,3 @@
-"""Pre- and post-processing for the PI0 policy."""
-
 from __future__ import annotations
 
 from collections.abc import Callable

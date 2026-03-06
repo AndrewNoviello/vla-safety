@@ -111,15 +111,6 @@ def save_config(config: Any, save_directory: Path, type_name: str) -> None:
         json.dump(d, f, indent=4)
 
 
-def load_config(config_cls: type[T], path: Path) -> T:
-    """Load a config from a local directory (reads config.json, ignores the 'type' field)."""
-    path = Path(path)
-    with open(path / CONFIG_NAME) as f:
-        data = json.load(f)
-    data.pop("type", None)
-    return _config_from_dict(config_cls, data)
-
-
 def load_config_from_checkpoint(
     pretrained_name_or_path: str | Path,
     *,

@@ -1,9 +1,3 @@
-"""Configuration dataclass for DINO-WM world model training.
-
-Mirrors the style of PI0Config / PI05Config in lerobot, using plain Python
-dataclasses (no Hydra) so it integrates naturally with the rest of the
-lerobot configuration system.
-"""
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -14,8 +8,10 @@ class DinoWMConfig:
     # Dataset
     # ------------------------------------------------------------------
     dataset_repo_id: str = "lerobot/pusht_image"
-    dataset_root: Optional[str] = None
-    dataset_episodes: Optional[list] = None
+    # Decode ALL video frames into RAM once before training (Linux CoW fork
+    # means workers inherit the dict at zero copy cost). Eliminates all I/O
+    # and keyframe-seek overhead during training. Use when dataset fits in RAM.
+    preload_frames: bool = False
 
     # ------------------------------------------------------------------
     # Temporal window
@@ -25,7 +21,6 @@ class DinoWMConfig:
     # Number of future frames to predict (only 1 is supported).
     num_pred: int = 1
     # Frame sub-sampling: use every Nth frame from the dataset trajectory.
-    # Timestamps are spaced frameskip / fps seconds apart.
     frameskip: int = 1
 
     # ------------------------------------------------------------------

@@ -1,28 +1,3 @@
-#!/usr/bin/env python
-"""DINO-WM world-model training using LeRobot datasets.
-
-Trains VWorldModel (dino_wm) on any LeRobotDataset, using the same
-dataset / dataloader infrastructure as the pi0 training script.
-
-Edit the "Configuration" section below, then run:
-
-    python -m lerobot.dino_wm_train
-
-Or with accelerate for multi-GPU:
-
-    accelerate launch -m lerobot.dino_wm_train
-
-Notes
------
-* Only datasets whose image features are stored as dtype "image" (parquet)
-  support multi-frame loading via delta_timestamps.  Datasets that store
-  images as dtype "video" (mp4) will only provide a single frame per sample;
-  for those you should set num_hist=1 and num_pred=1, or implement custom
-  multi-frame video decoding.
-* The dino_wm package must be importable.  This script prepends
-  DINO_WM_PATH to sys.path before importing any dino_wm modules.
-"""
-
 import itertools
 import logging
 import sys
@@ -43,7 +18,7 @@ from termcolor import colored
 from lerobot.configs.dino_wm_config import DinoWMConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.augmentation import image_transforms
-from lerobot.datasets.utils import cycle, dataset_to_policy_features
+from lerobot.datasets.utils import POLICY_FEATURES, cycle, dataset_to_policy_features
 from lerobot.types import FeatureType, NormalizationMode
 from lerobot.utils.processor_utils import normalize, to_device
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
@@ -72,8 +47,6 @@ from models.proprio import ProprioceptiveEmbedding  # noqa: E402
 
 CFG = DinoWMConfig(
     dataset_repo_id="AndrewNoviello/domino-world-v1",
-    dataset_root=None,
-    dataset_episodes=None,
 
     # Temporal window
     # frameskip=3 subsamples 30fps → effective 10fps so consecutive frames
@@ -152,45 +125,41 @@ DINO_WM_NORM_MAP = {
 # =====================================================================
 
 def _detect_image_key(features: dict) -> str:
-    """Return the first image- or video-dtype observation key in the dataset."""
-    preferred = ("observation.image", "observation.images.front")
+    """Return the first image-dtype key in the dataset."""
+    preferred = ("image0", "observation.image", "observation.images.front")
     for k in preferred:
-        if k in features and features[k]["dtype"] in ("image", "video"):
+        if k in features and features[k]["dtype"] == "image":
             return k
     for k, v in features.items():
-        if k.startswith("observation.") and v["dtype"] in ("image", "video"):
+        if v["dtype"] == "image":
             return k
     raise ValueError(
-        "No image or video observation key found in dataset features."
+        "No image observation key found in dataset features."
     )
 
 
-def _make_delta_timestamps(
-    cfg: DinoWMConfig, fps: float, features: dict
-) -> dict[str, list[float]]:
-    """Build delta_timestamps dict for LeRobotDataset.
+def _make_delta_indices(cfg: DinoWMConfig, features: dict) -> dict[str, list[int]]:
+    """Build delta_indices dict for LeRobotDataset.
 
-    Each key in the returned dict requests `num_hist + num_pred` frames
-    spaced by `frameskip / fps` seconds.
+    Each key requests `num_hist + num_pred` frames spaced by `frameskip` steps.
     """
     window = cfg.num_hist + cfg.num_pred
-    step_s = cfg.frameskip / fps
-    timestamps = [i * step_s for i in range(window)]
+    indices = [i * cfg.frameskip for i in range(window)]
 
-    delta_ts: dict[str, list[float]] = {}
+    delta_indices: dict[str, list[int]] = {}
 
-    # Image features (parquet "image" dtype and video "video" dtype)
+    # Image features (image0, image1, ... or observation.images.*)
     for k, v in features.items():
-        if k.startswith("observation.") and v["dtype"] in ("image", "video"):
-            delta_ts[k] = timestamps
+        if v["dtype"] == "image":
+            delta_indices[k] = indices
 
-    # State and action
-    if "observation.state" in features:
-        delta_ts["observation.state"] = timestamps
-    if "action" in features:
-        delta_ts["action"] = timestamps
+    # State and actions
+    if "state" in features:
+        delta_indices["state"] = indices
+    if "actions" in features:
+        delta_indices["actions"] = indices
 
-    return delta_ts
+    return delta_indices
 
 
 def _build_model(
@@ -337,9 +306,9 @@ def _reformat_batch(
     """Convert a LeRobot batch dict into VWorldModel inputs.
 
     LeRobot format (after normalise + to_device):
-        batch[image_key]          : (B, T, C, H, W)  float, ImageNet-normalised
-        batch["observation.state"]: (B, T, state_dim)
-        batch["action"]           : (B, T, action_dim)
+        batch[image_key]  : (B, T, C, H, W)  float, ImageNet-normalised
+        batch["state"]    : (B, T, state_dim)
+        batch["actions"]  : (B, T, action_dim)
 
     VWorldModel expects:
         obs = {"visual": (B, T, C, H, W), "proprio": (B, T, proprio_dim)}
@@ -359,9 +328,9 @@ def _reformat_batch(
 
     obs = {
         "visual": visual,
-        "proprio": batch["observation.state"].float(),   # (B, T, state_dim)
+        "proprio": batch["state"].float(),   # (B, T, state_dim)
     }
-    act = batch["action"].float()   # (B, T, action_dim)
+    act = batch["actions"].float()   # (B, T, action_dim)
     return obs, act
 
 
@@ -435,52 +404,36 @@ def train(cfg: DinoWMConfig = CFG) -> None:
 
     image_transforms_fn = image_transforms()
 
-    # We need to build delta_timestamps, which requires the dataset fps.
-    # Load the dataset once without delta_timestamps to get fps / features.
-    dataset_probe = LeRobotDataset(
-        cfg.dataset_repo_id,
-        episodes=cfg.dataset_episodes,
-        root=cfg.dataset_root,
-    )
-    fps: float = dataset_probe.fps
-    raw_features: dict = dataset_probe.features
-    del dataset_probe   # free the probe; real dataset loads below
+    image_key = _detect_image_key(POLICY_FEATURES)
+    logging.info(f"Detected image key: {image_key!r}")
 
-    image_key = _detect_image_key(raw_features)
-    logging.info(f"Detected image key: {image_key!r}  (fps={fps})")
+    delta_indices = _make_delta_indices(cfg, POLICY_FEATURES)
 
-    # Check for video-dtype images and warn accordingly
-    video_image_keys = [
-        k for k, v in raw_features.items()
-        if k.startswith("observation.") and v["dtype"] == "video"
-    ]
-    if video_image_keys:
-        logging.warning(
-            f"Dataset has video-stored images {video_image_keys}. "
-            "Multi-frame loading for these is not implemented; they will "
-            "provide only the current frame.  Consider using a dataset with "
-            "parquet-stored images (dtype='image') for full DINO-WM training."
-        )
-
-    delta_timestamps = _make_delta_timestamps(cfg, fps, raw_features)
-
-    # Infer action / proprio dims from dataset metadata
-    action_dim: int = raw_features["action"]["shape"][-1]
-    proprio_dim: int = raw_features["observation.state"]["shape"][-1]
+    action_dim: int = POLICY_FEATURES["actions"]["shape"][-1]
+    proprio_dim: int = POLICY_FEATURES["state"]["shape"][-1]
     logging.info(f"action_dim={action_dim}, proprio_dim={proprio_dim}")
 
     accelerator.wait_for_everyone()
 
     dataset = LeRobotDataset(
         cfg.dataset_repo_id,
-        episodes=cfg.dataset_episodes,
-        delta_timestamps=delta_timestamps,
+        delta_indices=delta_indices,
         image_transforms=image_transforms_fn,
-        root=cfg.dataset_root,
     )
 
+    # Optionally preload all video frames into RAM before spawning workers.
+    if cfg.preload_frames and hasattr(dataset, "preload_video_frames"):
+        if is_main:
+            logging.info(
+                "Preloading all video frames into RAM "
+                "(cfg.preload_frames=True). This may take a few minutes ..."
+            )
+        dataset.preload_video_frames()
+        if is_main:
+            logging.info("Frame preload complete.")
+
     # Build PolicyFeature dict for use with normalize()
-    policy_features = dataset_to_policy_features(raw_features)
+    policy_features = dataset_to_policy_features(POLICY_FEATURES)
 
     # --- Model ---
     if is_main:
@@ -560,15 +513,30 @@ def train(cfg: DinoWMConfig = CFG) -> None:
 
     if is_main:
         logging.info("Starting DINO-WM training")
+        if cfg.num_workers > 0:
+            logging.info(
+                f"Spawning {cfg.num_workers} DataLoader workers "
+                "(persistent_workers=True). First batch may take 15-60 s "
+                "while workers start up and warm their video container caches."
+            )
 
     for step in range(1, cfg.steps + 1):
+        if is_main:
+            logging.info(f"[step {step}/{cfg.steps}] fetching batch ...")
         t0 = time.perf_counter()
         batch = next(dl_iter)
+        t_data = time.perf_counter() - t0
+        if is_main:
+            logging.info(
+                f"[step {step}/{cfg.steps}] batch fetched in {t_data:.3f}s — normalizing + moving to device"
+            )
         # Normalize (ImageNet for visual; MEAN_STD for state/action)
         batch = normalize(batch, dataset.stats, policy_features, DINO_WM_NORM_MAP)
         batch = to_device(batch, device)
         train_tracker.dataloading_s = time.perf_counter() - t0
 
+        if is_main:
+            logging.info(f"[step {step}/{cfg.steps}] forward pass ...")
         t1 = time.perf_counter()
         model.train()
 
@@ -578,12 +546,24 @@ def train(cfg: DinoWMConfig = CFG) -> None:
             _z_pred, _vis_pred, _vis_recon, loss, loss_components = (
                 accelerator.unwrap_model(model)(obs, act)
             )
+        t_fwd = time.perf_counter() - t1
+        if is_main:
+            logging.info(
+                f"[step {step}/{cfg.steps}] forward done in {t_fwd:.3f}s "
+                f"— loss={loss.item():.4f}; backward ..."
+            )
 
         # Zero all optimizer gradients
         for opt in optimizers:
             opt.zero_grad()
 
+        t_bwd = time.perf_counter()
         accelerator.backward(loss)
+        t_bwd = time.perf_counter() - t_bwd
+        if is_main:
+            logging.info(
+                f"[step {step}/{cfg.steps}] backward done in {t_bwd:.3f}s — optimizer step ..."
+            )
 
         # Clip & step each optimizer
         total_norm = 0.0
@@ -612,8 +592,18 @@ def train(cfg: DinoWMConfig = CFG) -> None:
 
         train_tracker.step()
 
-        is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0 and is_main
+        # Log every step (not just log_freq); reset averages each step so values reflect current step.
+        is_log_step = is_main
         is_save_step = step % cfg.save_freq == 0 or step == cfg.steps
+
+        if is_main:
+            logging.info(
+                f"[step {step}/{cfg.steps}] DONE — "
+                f"data={t_data:.3f}s  "
+                f"fwd={t_fwd:.3f}s  bwd={t_bwd:.3f}s  "
+                f"update={time.perf_counter() - t1:.3f}s  "
+                f"loss={loss.item():.4f}  grad_norm={total_norm:.3f}"
+            )
 
         if is_log_step:
             logging.info(train_tracker)

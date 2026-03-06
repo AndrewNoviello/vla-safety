@@ -1,18 +1,3 @@
-#!/usr/bin/env python
-
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 import importlib
 import importlib.metadata
 import json
@@ -21,7 +6,7 @@ import os
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import numpy as np
 import torch
@@ -30,6 +15,55 @@ from datasets.utils.logging import disable_progress_bar, enable_progress_bar
 
 JsonLike = str | int | float | bool | None | list["JsonLike"] | dict[str, "JsonLike"] | tuple["JsonLike", ...]
 T = TypeVar("T", bound=JsonLike)
+
+
+# ---------------------------------------------------------------------------
+# Dict serialization
+# ---------------------------------------------------------------------------
+
+
+def flatten_dict(d: dict, parent_key: str = "", sep: str = "/") -> dict:
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
+
+def unflatten_dict(d: dict, sep: str = "/") -> dict:
+    out: dict = {}
+    for key, value in d.items():
+        parts = key.split(sep)
+        cur = out
+        for part in parts[:-1]:
+            cur = cur.setdefault(part, {})
+        cur[parts[-1]] = value
+    return out
+
+
+# ---------------------------------------------------------------------------
+# JSON I/O
+# ---------------------------------------------------------------------------
+
+
+def load_json(fpath: Path) -> Any:
+    with open(fpath) as f:
+        return json.load(f)
+
+
+def write_json(data: dict, fpath: Path) -> None:
+    fpath.parent.mkdir(exist_ok=True, parents=True)
+    with open(fpath, "w") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+def cast_stats_to_numpy(stats: dict) -> dict[str, dict[str, np.ndarray]]:
+    """Convert nested stats dict (from JSON) to numpy arrays."""
+    stats = {key: np.array(value) for key, value in flatten_dict(stats).items()}
+    return unflatten_dict(stats)
 
 
 def is_package_available(pkg_name: str, import_name: str | None = None) -> bool:
@@ -199,19 +233,6 @@ def format_big_number(num, precision=0):
 
 def has_method(cls: object, method_name: str) -> bool:
     return hasattr(cls, method_name) and callable(getattr(cls, method_name))
-
-
-def is_valid_numpy_dtype_string(dtype_str: str) -> bool:
-    """
-    Return True if a given string can be converted to a numpy dtype.
-    """
-    try:
-        # Attempt to convert the string to a numpy dtype
-        np.dtype(dtype_str)
-        return True
-    except TypeError:
-        # If a TypeError is raised, the string is not a valid dtype
-        return False
 
 
 @contextmanager

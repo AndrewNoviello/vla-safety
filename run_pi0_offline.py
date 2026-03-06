@@ -1,28 +1,3 @@
-#!/usr/bin/env python
-"""
-Run π₀ (PI0) base policy offline: give it images, a text prompt, and proprio state,
-and get predicted actions without a robot.
-
-This script loads the base policy from the Hub, builds an observation from your
-inputs, runs one forward pass, and prints (or optionally saves) the predicted
-action chunk.
-
-Usage:
-    # With image paths (one image replicated to all 3 cameras, or 3 paths in order)
-    python run_pi0_offline.py --prompt "Pick up the red block" --images /path/to/image.jpg
-
-    # Or 3 images for base + left_wrist + right_wrist
-    python run_pi0_offline.py --prompt "Pick up the red block" --images img1.jpg img2.jpg img3.jpg
-
-    # Save action to .npy
-    python run_pi0_offline.py --output action.npy
-
-Requirements:
-    - lerobot and deps installed (or run from workspace with lerobot in ./lerobot)
-    - HuggingFace token if needed for lerobot/pi0_base
-    - Images will be resized to 224x224 (PI0 default)
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -37,7 +12,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 import numpy as np
 import torch
 
-from lerobot.datasets.utils import cast_stats_to_numpy, load_json
+from lerobot.utils.utils import cast_stats_to_numpy, load_json
 from lerobot.types import FeatureType
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.pi0 import PI0Policy

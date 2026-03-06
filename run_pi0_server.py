@@ -1,29 +1,3 @@
-#!/usr/bin/env python
-"""
-FastAPI server for PI0 offline inference: send images + prompt (and optional proprio),
-get back predicted actions.
-
-Start (from workspace root):
-  uvicorn run_pi0_server:app --host 0.0.0.0 --port 8000
-
-Then POST to /predict with multipart/form-data:
-  - prompt: text instruction
-  - image_0: image file (required; used for all cameras if only one provided)
-  - image_1, image_2: optional; if provided, must match policy's image key order
-  - proprio: optional JSON array of floats, e.g. "[0.1, 0.2, 0.0]"
-
-Or POST JSON to /predict with:
-  - prompt: str
-  - images: optional list of base64-encoded image strings (one or three)
-  - proprio: optional list of floats
-
-Requirements: pip install fastapi uvicorn (and lerobot[pi] as for run_pi0_offline).
-
-Latency note: This is suitable for teleoperation, batching, or non-real-time use.
-For low-latency robot control (e.g. 10–30 Hz), run the policy on the same machine
-as the robot or on a local network; internet RTT to RunPod often adds 50–200ms+ per request.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -41,7 +15,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from lerobot.datasets.utils import cast_stats_to_numpy, load_json
+from lerobot.utils.utils import cast_stats_to_numpy, load_json
 from lerobot.types import FeatureType
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.pi0 import PI0Policy

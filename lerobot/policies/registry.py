@@ -1,11 +1,3 @@
-"""
-Central registry of all policy types.
-
-To add a new model, import its config class here and add an entry to the dicts.
-The config module's bottom-level register_policy() call populates _CONFIG_REGISTRY
-at import time; the explicit imports below ensure that happens when this module loads.
-"""
-
 _CONFIG_REGISTRY: dict[str, type] = {}
 
 
@@ -30,4 +22,3 @@ def get_known_policies() -> list[str]:
 # ---------------------------------------------------------------------------
 
 from lerobot.policies.pi0.configuration_pi0 import PI0Config  # noqa: F401, E402
-from lerobot.policies.pi05.configuration_pi05 import PI05Config  # noqa: F401, E402

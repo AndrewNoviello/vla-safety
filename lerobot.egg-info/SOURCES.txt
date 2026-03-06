@@ -13,7 +13,6 @@ pyproject.toml
 ../lerobot.egg-info/top_level.txt
 ../lerobot/configs/dino_wm_config.py
 ../lerobot/datasets/augmentation.py
-../lerobot/datasets/compute_stats.py
 ../lerobot/datasets/lerobot_dataset.py
 ../lerobot/datasets/utils.py
 ../lerobot/policies/__init__.py

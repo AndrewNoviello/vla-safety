@@ -59,23 +59,6 @@ def make_configuration(
 
 def _complete_features(cfg) -> None:
     """Apply policy-specific feature completion to a config in place."""
-    if cfg.type == "pi05":
-        for i in range(cfg.empty_cameras):
-            key = OBS_IMAGES + f".empty_camera_{i}"
-            cfg.input_features[key] = PolicyFeature(
-                type=FeatureType.VISUAL,
-                shape=(3, *cfg.image_resolution),
-            )
-        if OBS_STATE not in cfg.input_features:
-            cfg.input_features[OBS_STATE] = PolicyFeature(
-                type=FeatureType.STATE,
-                shape=(cfg.max_state_dim,),
-            )
-        if ACTION not in cfg.output_features:
-            cfg.output_features[ACTION] = PolicyFeature(
-                type=FeatureType.ACTION,
-                shape=(cfg.max_action_dim,),
-            )
     # PI0: no completion needed
 
 

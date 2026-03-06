@@ -1,49 +1,3 @@
-#!/usr/bin/env python
-
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""
-This file contains lists of available environments, dataset and policies to reflect the current state of LeRobot library.
-We do not want to import all the dependencies, but instead we keep it lightweight to ensure fast access to these variables.
-
-Example:
-    ```python
-        import lerobot
-        print(lerobot.available_envs)
-        print(lerobot.available_tasks_per_env)
-        print(lerobot.available_datasets)
-        print(lerobot.available_datasets_per_env)
-        print(lerobot.available_real_world_datasets)
-        print(lerobot.available_policies)
-        print(lerobot.available_policies_per_env)
-        print(lerobot.available_robots)
-        print(lerobot.available_cameras)
-        print(lerobot.available_motors)
-    ```
-
-When implementing a new dataset loadable with LeRobotDataset follow these steps:
-- Update `available_datasets_per_env` in `lerobot/__init__.py`
-
-When implementing a new environment (e.g. `gym_aloha`), follow these steps:
-- Update `available_tasks_per_env` and `available_datasets_per_env` in `lerobot/__init__.py`
-
-When implementing a new policy class (e.g. `DiffusionPolicy`) follow these steps:
-- Update `available_policies` and `available_policies_per_env`, in `lerobot/__init__.py`
-- Set the required `name` class attribute.
-- Update variables in `tests/test_available.py` by importing your new Policy class
-"""
-
 import itertools
 
 from lerobot.__version__ import __version__  # noqa: F401
@@ -157,7 +111,7 @@ available_datasets = sorted(
 )
 
 # lists all available policies from `lerobot/policies`
-available_policies = ["pi0", "pi05", "groot"]
+available_policies = ["pi0", "groot"]
 
 # lists all available robots from `lerobot/robots`
 available_robots = [

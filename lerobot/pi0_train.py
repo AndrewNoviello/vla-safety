@@ -1,29 +1,3 @@
-#!/usr/bin/env python
-
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""
-Training script with hardcoded configuration.
-
-Edit the values in the "Configuration" section below, then run:
-
-    python -m lerobot.lerobot_train
-
-Or with accelerate for multi-GPU:
-
-    accelerate launch -m lerobot.lerobot_train
-"""
 import datetime as dt
 import logging
 import time
@@ -39,10 +13,13 @@ from torch.optim import Optimizer
 from lerobot.types import FeatureType, NormalizationMode
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.augmentation import image_transforms
-from lerobot.datasets.utils import cycle, dataset_to_policy_features
+from lerobot.datasets.utils import (
+    POLICY_FEATURES,
+    cycle,
+    dataset_to_policy_features,
+)
 from lerobot.optim import make_optimizer_and_scheduler
 from lerobot.policies.factory import make_configuration, make_policy
-from lerobot.types import FeatureType
 from lerobot.policies.pi0.processor_pi0 import _ensure_newline
 from lerobot.policies.pretrained import PreTrainedPolicy
 from transformers import AutoTokenizer
@@ -70,11 +47,7 @@ from accelerate.utils import DistributedDataParallelKwargs
 # =====================================================================
 
 DATASET_REPO_ID = "lerobot/aloha_sim_insertion_scripted"
-DATASET_ROOT = None
-DATASET_EPISODES = None
 
-# Hardcoded PI0 config
-POLICY_TYPE = "pi0"
 PRETRAINED_PATH = None
 PUSH_TO_HUB = False
 
@@ -85,7 +58,6 @@ SEED = 1000
 LOG_FREQ = 10
 SAVE_CHECKPOINT = True
 SAVE_FREQ = 20_000
-TOLERANCE_S = 1e-4
 
 PEFT_KWARGS = None  # set to e.g. {"method_type": "LORA", "r": 16} to enable PEFT
 
@@ -95,6 +67,9 @@ WANDB_ENTITY = None
 WANDB_NOTES = None
 
 OUTPUT_DIR = 'outputs/aloha_sim_insertion_scripted'
+
+# PI0 chunk size (number of action steps)
+PI0_CHUNK_SIZE = 50
 
 # =====================================================================
 # Training logic
@@ -169,8 +144,8 @@ def train():
             entity=WANDB_ENTITY,
             notes=WANDB_NOTES,
             log_dir=OUTPUT_DIR,
-            job_name=POLICY_TYPE,
-            policy_type=POLICY_TYPE,
+            job_name="pi0",
+            policy_type="pi0",
             seed=SEED,
             dataset_repo_id=DATASET_REPO_ID,
         )
@@ -184,15 +159,14 @@ def train():
 
     image_transforms_fn = image_transforms()
 
+    delta_indices = {"actions": list(range(PI0_CHUNK_SIZE))}
+
     if is_main_process:
         logging.info("Creating dataset")
         dataset = LeRobotDataset(
             DATASET_REPO_ID,
-            episodes=DATASET_EPISODES,
+            delta_indices=delta_indices,
             image_transforms=image_transforms_fn,
-            root=DATASET_ROOT,
-            tolerance_s=TOLERANCE_S,
-            policy_type=POLICY_TYPE,
         )
 
     accelerator.wait_for_everyone()
@@ -200,21 +174,18 @@ def train():
     if not is_main_process:
         dataset = LeRobotDataset(
             DATASET_REPO_ID,
-            episodes=DATASET_EPISODES,
+            delta_indices=delta_indices,
             image_transforms=image_transforms_fn,
-            root=DATASET_ROOT,
-            tolerance_s=TOLERANCE_S,
-            policy_type=POLICY_TYPE,
         )
 
     # --- Policy ---
     if is_main_process:
         logging.info("Creating policy")
-    _features = dataset_to_policy_features(dataset.features)
+    _features = dataset_to_policy_features(POLICY_FEATURES)
     _input_features = {k: v for k, v in _features.items() if v.type is not FeatureType.ACTION}
     _output_features = {k: v for k, v in _features.items() if v.type is FeatureType.ACTION}
     _config = make_configuration(
-        POLICY_TYPE,
+        "pi0",
         _input_features,
         _output_features,
         pretrained_path=PRETRAINED_PATH,
@@ -234,7 +205,7 @@ def train():
     if is_main_process:
         logging.info("Creating optimizer and scheduler")
     optimizer, lr_scheduler, grad_clip_norm = make_optimizer_and_scheduler(
-        POLICY_TYPE, policy.parameters(), STEPS
+        "pi0", policy.parameters(), STEPS
     )
 
     step = 0

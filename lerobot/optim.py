@@ -1,10 +1,3 @@
-"""
-Optimizer and scheduler presets, plus checkpoint save/load utilities.
-
-Each preset function takes (params, num_training_steps) and returns
-(optimizer, scheduler, grad_clip_norm).
-"""
-
 import logging
 import math
 from collections.abc import Iterable
@@ -15,7 +8,7 @@ import torch
 from safetensors.torch import load_file, save_file
 from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 
-from lerobot.datasets.utils import flatten_dict, unflatten_dict, write_json
+from lerobot.utils.utils import flatten_dict, unflatten_dict, write_json
 from lerobot.utils.constants import (
     OPTIMIZER_PARAM_GROUPS,
     OPTIMIZER_STATE,
@@ -93,7 +86,6 @@ def make_pi0_optimizer(params: OptimizerParams, num_training_steps: int) -> Opti
 
 PRESETS: dict[str, Any] = {
     "pi0": make_pi0_optimizer,
-    "pi05": make_pi0_optimizer,
 }
 
 
