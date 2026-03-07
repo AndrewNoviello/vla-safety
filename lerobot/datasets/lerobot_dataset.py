@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from pathlib import Path
+from threading import Lock
 
 import datasets
 import torch
@@ -15,6 +16,28 @@ from lerobot.datasets.utils import (
 from lerobot.utils.constants import HF_LEROBOT_HOME
 
 
+# ---------------------------------------------------------------------------
+# Fix 2: Module-level VideoDecoder cache with a Lock.
+# One decoder per video path, per process. Each DataLoader worker gets its
+# own module-level instance (via fork/spawn), so no cross-process sharing.
+# The Lock makes it safe if threads ever access the same worker's cache.
+# ---------------------------------------------------------------------------
+class _VideoDecoderCache:
+    def __init__(self) -> None:
+        self._cache: dict = {}
+        self._lock = Lock()
+
+    def get(self, path: str):
+        with self._lock:
+            if path not in self._cache:
+                from torchcodec.decoders import VideoDecoder
+                self._cache[path] = VideoDecoder(path)
+            return self._cache[path]
+
+
+_decoder_cache = _VideoDecoderCache()
+
+
 class LeRobotDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -28,10 +51,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.root = HF_LEROBOT_HOME / repo_id
         self.image_transforms = image_transforms
         self.delta_indices = delta_indices
-        self.prompt = ""
+        self.prompt = prompt if prompt is not None else ""
         self.root.mkdir(exist_ok=True, parents=True)
         self._video_dir = self.root / "videos"
-        self._decoder_cache: dict = {}
 
         meta_ok = (self.root / "meta" / "stats.json").exists()
         data_ok = any((self.root / "data").glob("episode_*.parquet"))
@@ -43,12 +65,28 @@ class LeRobotDataset(torch.utils.data.Dataset):
             )
 
         self._load_metadata()
-        self.hf_dataset = self._load_hf_dataset()
 
-        self._episode_boundaries = self._build_episode_boundaries()
+        # Fix 1: Load the HF dataset once in __init__ only to extract lightweight
+        # metadata (episode boundaries, frame count). Then discard so that the
+        # dataset object is cheap to pickle/fork. Each DataLoader worker lazily
+        # reloads its own copy via the `hf_dataset` property on first __getitem__.
+        _bootstrap = self._load_hf_dataset()
+        self._episode_boundaries = self._build_episode_boundaries(_bootstrap)
+        self.num_frames = len(_bootstrap)
+        self.num_episodes = len(set(_bootstrap["episode_index"]))
+        del _bootstrap
 
-        self.num_frames = len(self.hf_dataset)
-        self.num_episodes = len(set(self.hf_dataset["episode_index"]))
+        # Will be populated lazily inside each worker process.
+        self._hf_dataset: datasets.Dataset | None = None
+
+    # ------------------------------------------------------------------
+    # Fix 1: lazy HF dataset property
+    # ------------------------------------------------------------------
+    @property
+    def hf_dataset(self) -> datasets.Dataset:
+        if self._hf_dataset is None:
+            self._hf_dataset = self._load_hf_dataset()
+        return self._hf_dataset
 
     def _load_metadata(self):
         self._stats = load_stats(self.root)
@@ -58,8 +96,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
     def _keys_by_dtype(self, *dtypes: str) -> list[str]:
         return [key for key, ft in self.features.items() if ft["dtype"] in dtypes]
 
-    def _build_episode_boundaries(self) -> dict[int, tuple[int, int]]:
-        episode_indices = self.hf_dataset["episode_index"]
+    def _build_episode_boundaries(self, ds: datasets.Dataset) -> dict[int, tuple[int, int]]:
+        episode_indices = ds["episode_index"]
         boundaries: dict[int, tuple[int, int]] = {}
         start = 0
         for i in range(len(episode_indices)):
@@ -72,16 +110,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
             boundaries[ep] = (start, len(episode_indices))
         return boundaries
 
-    def _get_video_decoder(self, video_path: Path):
-        key = str(video_path)
-        if key not in self._decoder_cache:
-            from torchcodec.decoders import VideoDecoder
-            self._decoder_cache[key] = VideoDecoder(key)
-        return self._decoder_cache[key]
-
     def _load_video_frames(self, ep_idx: int, frame_indices: list[int]) -> torch.Tensor:
         path = self._video_dir / f"episode_{ep_idx:03d}.mp4"
-        decoder = self._get_video_decoder(path)
+        decoder = _decoder_cache.get(str(path))
         batch = decoder.get_frames_at(indices=frame_indices)
         return (batch.data / 255.0).float()
 
@@ -93,7 +124,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
     def _get_query_indices(
         self, abs_idx: int, ep_idx: int
     ) -> tuple[dict[str, list[int]], dict[str, torch.Tensor]]:
-        ep_start, ep_end = self._episode_boundaries.get(ep_idx, (0, len(self.hf_dataset)))
+        ep_start, ep_end = self._episode_boundaries.get(ep_idx, (0, self.num_frames))
         query_indices = {
             key: [max(ep_start, min(ep_end - 1, abs_idx + delta)) for delta in delta_idx]
             for key, delta_idx in self.delta_indices.items()
@@ -128,7 +159,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         item["image"] = self._load_video_frames(ep_idx, [frame_idx]).squeeze(0)
 
-
         if self.delta_indices is not None:
             query_indices, padding = self._get_query_indices(abs_idx, ep_idx)
             query_result = self._query_hf_dataset(query_indices, ep_idx)
@@ -140,7 +170,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
             for cam in self._keys_by_dtype("image"):
                 item[cam] = self.image_transforms(item[cam])
 
-        task_idx = int(item["task_index"])
         item["task"] = self.prompt
 
         return item

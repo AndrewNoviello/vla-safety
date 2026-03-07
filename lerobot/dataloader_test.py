@@ -22,12 +22,9 @@ PI0_CHUNK_SIZE = 50
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    image_transforms_fn = image_transforms()
-    delta_indices = {"action": list(range(PI0_CHUNK_SIZE))}
-
     dataset = LeRobotDataset(
         DATASET_REPO_ID,
-        delta_indices=delta_indices,
+        delta_indices=None,
         image_transforms=None,
     )
 
