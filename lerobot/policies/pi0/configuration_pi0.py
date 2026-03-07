@@ -115,7 +115,3 @@ class PI0Config:
         )
 
 
-# Register with the policy registry.
-from lerobot.policies.registry import register_policy  # noqa: E402
-
-register_policy("pi0", PI0Config)

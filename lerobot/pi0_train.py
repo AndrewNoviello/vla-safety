@@ -1,12 +1,8 @@
-import datetime as dt
 import logging
-import time
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
 import torch
-from accelerate import Accelerator
 from termcolor import colored
 from torch.optim import Optimizer
 
@@ -18,14 +14,13 @@ from lerobot.datasets.utils import (
     cycle,
     dataset_to_policy_features,
 )
-from lerobot.optim import make_optimizer_and_scheduler
-from lerobot.policies.factory import make_configuration, make_policy
-from lerobot.policies.pi0.processor_pi0 import _ensure_newline
+from lerobot.policies.pi0.configuration_pi0 import PI0Config
+from lerobot.policies.pi0.modeling_pi0 import PI0Policy
+from lerobot.policies.pi0.processor_pi0 import preprocess_pi0
 from lerobot.policies.pretrained import PreTrainedPolicy
 from transformers import AutoTokenizer
 
-from lerobot.utils.processor_utils import normalize, to_device, tokenize_batch
-from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
+from lerobot.utils.optim_utils import cosine_warmup_scheduler
 from lerobot.utils.train_utils import (
     get_step_checkpoint_dir,
     load_training_state,
@@ -40,8 +35,6 @@ from lerobot.utils.utils import (
 )
 from lerobot.utils.wandb_utils import WandBLogger
 
-from accelerate.utils import DistributedDataParallelKwargs
-
 # =====================================================================
 # Configuration -- edit these values for your experiment
 # =====================================================================
@@ -49,7 +42,6 @@ from accelerate.utils import DistributedDataParallelKwargs
 DATASET_REPO_ID = "lerobot/aloha_sim_insertion_scripted"
 
 PRETRAINED_PATH = None
-PUSH_TO_HUB = False
 
 STEPS = 10
 BATCH_SIZE = 32
@@ -58,8 +50,6 @@ SEED = 1000
 LOG_FREQ = 10
 SAVE_CHECKPOINT = True
 SAVE_FREQ = 20_000
-
-PEFT_KWARGS = None  # set to e.g. {"method_type": "LORA", "r": 16} to enable PEFT
 
 WANDB_ENABLE = False
 WANDB_PROJECT = "lerobot"
@@ -77,46 +67,41 @@ PI0_CHUNK_SIZE = 50
 
 
 def update_policy(
-    train_metrics: MetricsTracker,
     policy: PreTrainedPolicy,
     batch: Any,
     optimizer: Optimizer,
     grad_clip_norm: float,
-    accelerator: Accelerator,
+    device: torch.device,
     lr_scheduler=None,
-    lock=None,
-) -> tuple[MetricsTracker, dict]:
-    start_time = time.perf_counter()
+) -> dict:
     policy.train()
 
-    with accelerator.autocast():
-        loss, output_dict = policy.forward(batch)
+    with torch.amp.autocast(device_type=device.type):
+        loss, _ = policy.forward(batch)
 
-    accelerator.backward(loss)
+    loss.backward()
 
     if grad_clip_norm > 0:
-        grad_norm = accelerator.clip_grad_norm_(policy.parameters(), grad_clip_norm)
+        grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip_norm)
     else:
         grad_norm = torch.nn.utils.clip_grad_norm_(
             policy.parameters(), float("inf"), error_if_nonfinite=False
         )
 
-    with lock if lock is not None else nullcontext():
-        optimizer.step()
-
+    optimizer.step()
     optimizer.zero_grad()
 
     if lr_scheduler is not None:
         lr_scheduler.step()
 
-    if has_method(accelerator.unwrap_model(policy, keep_fp32_wrapper=True), "update"):
-        accelerator.unwrap_model(policy, keep_fp32_wrapper=True).update()
+    if has_method(policy, "update"):
+        policy.update()
 
-    train_metrics.loss = loss.item()
-    train_metrics.grad_norm = grad_norm.item()
-    train_metrics.lr = optimizer.param_groups[0]["lr"]
-    train_metrics.update_s = time.perf_counter() - start_time
-    return train_metrics, output_dict
+    metrics = {
+        "loss": loss.item(),
+        "grad_norm": grad_norm.item(),
+    }
+    return metrics
 
 
 # Hardcoded normalization for PI0
@@ -128,17 +113,10 @@ PI0_NORM_MAP = {
 
 
 def train():
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    accelerator = Accelerator(
-        step_scheduler_with_optimizer=False,
-        kwargs_handlers=[ddp_kwargs],
-    )
-
-    init_logging(accelerator=accelerator)
-    is_main_process = accelerator.is_main_process
+    init_logging()
 
     wandb_logger = None
-    if WANDB_ENABLE and WANDB_PROJECT and is_main_process:
+    if WANDB_ENABLE and WANDB_PROJECT:
         wandb_logger = WandBLogger(
             project=WANDB_PROJECT,
             entity=WANDB_ENTITY,
@@ -151,77 +129,55 @@ def train():
         )
 
     if SEED is not None:
-        set_seed(SEED, accelerator=accelerator)
+        set_seed(SEED)
 
-    device = accelerator.device
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
 
     image_transforms_fn = image_transforms()
-
     delta_indices = {"actions": list(range(PI0_CHUNK_SIZE))}
 
-    if is_main_process:
-        logging.info("Creating dataset")
-        dataset = LeRobotDataset(
-            DATASET_REPO_ID,
-            delta_indices=delta_indices,
-            image_transforms=image_transforms_fn,
-        )
-
-    accelerator.wait_for_everyone()
-
-    if not is_main_process:
-        dataset = LeRobotDataset(
-            DATASET_REPO_ID,
-            delta_indices=delta_indices,
-            image_transforms=image_transforms_fn,
-        )
+    dataset = LeRobotDataset(
+        DATASET_REPO_ID,
+        delta_indices=delta_indices,
+        image_transforms=image_transforms_fn,
+    )
 
     # --- Policy ---
-    if is_main_process:
-        logging.info("Creating policy")
     _features = dataset_to_policy_features(POLICY_FEATURES)
     _input_features = {k: v for k, v in _features.items() if v.type is not FeatureType.ACTION}
     _output_features = {k: v for k, v in _features.items() if v.type is FeatureType.ACTION}
-    _config = make_configuration(
-        "pi0",
-        _input_features,
-        _output_features,
+    config = PI0Config(
+        input_features=_input_features,
+        output_features=_output_features,
         pretrained_path=PRETRAINED_PATH,
-        use_peft=PEFT_KWARGS is not None,
         gradient_checkpointing=True,
     )
-    policy = make_policy(_config, dataset_stats=dataset.stats, dataset_meta=dataset)
-
-    is_peft = PEFT_KWARGS is not None
-    if is_peft:
-        logging.info("Using PEFT! Wrapping model.")
-        policy = policy.wrap_with_peft(peft_cli_overrides=PEFT_KWARGS)
-
-    accelerator.wait_for_everyone()
+    if PRETRAINED_PATH:
+        policy = PI0Policy.from_pretrained(PRETRAINED_PATH, config=config)
+    else:
+        policy = PI0Policy(config)
+    policy = policy.to(device)
 
     # --- Optimizer ---
-    if is_main_process:
-        logging.info("Creating optimizer and scheduler")
-    optimizer, lr_scheduler, grad_clip_norm = make_optimizer_and_scheduler(
-        "pi0", policy.parameters(), STEPS
+    optimizer = torch.optim.AdamW(
+        policy.parameters(), lr=2.5e-5, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.01
     )
+    lr_scheduler = cosine_warmup_scheduler(
+        optimizer, STEPS,
+        warmup_steps=1_000, decay_steps=30_000, peak_lr=2.5e-5, decay_lr=2.5e-6,
+    )
+    grad_clip_norm = 1.0
 
     step = 0
     num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     num_total_params = sum(p.numel() for p in policy.parameters())
 
-    if is_main_process:
-        logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {OUTPUT_DIR}")
-        logging.info(f"steps={STEPS} ({format_big_number(STEPS)})")
-        logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
-        logging.info(f"{dataset.num_episodes=}")
-        num_processes = accelerator.num_processes
-        effective_bs = BATCH_SIZE * num_processes
-        logging.info(f"Effective batch size: {BATCH_SIZE} x {num_processes} = {effective_bs}")
-        logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
-        logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
+    logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {OUTPUT_DIR}")
+    logging.info(f"steps={STEPS} ({format_big_number(STEPS)}) | dataset: {format_big_number(dataset.num_frames)} frames, {dataset.num_episodes} episodes")
+    logging.info(f"Batch size: {BATCH_SIZE} | params: {format_big_number(num_learnable_params)} learnable / {format_big_number(num_total_params)} total")
 
     # --- Dataloader ---
     dataloader = torch.utils.data.DataLoader(
@@ -233,37 +189,13 @@ def train():
         drop_last=False,
         prefetch_factor=2 if NUM_WORKERS > 0 else None,
     )
-
-    accelerator.wait_for_everyone()
-    policy, optimizer, dataloader, lr_scheduler = accelerator.prepare(
-        policy, optimizer, dataloader, lr_scheduler
-    )
     dl_iter = cycle(dataloader)
 
     policy.train()
 
-    train_metrics = {
-        "loss": AverageMeter("loss", ":.3f"),
-        "grad_norm": AverageMeter("grdn", ":.3f"),
-        "lr": AverageMeter("lr", ":0.1e"),
-        "update_s": AverageMeter("updt_s", ":.3f"),
-        "dataloading_s": AverageMeter("data_s", ":.3f"),
-    }
-
-    effective_batch_size = BATCH_SIZE * accelerator.num_processes
-    train_tracker = MetricsTracker(
-        effective_batch_size,
-        dataset.num_frames,
-        dataset.num_episodes,
-        train_metrics,
-        steps=step,
-        accelerator=accelerator,
-    )
-
-    if is_main_process:
-        logging.info(
-            f"Start offline training on a fixed dataset, with effective batch size: {effective_batch_size}"
-        )
+    # Running averages for logging (sum, count)
+    log_sums = {"loss": 0.0, "grad_norm": 0.0}
+    log_counts = {k: 0 for k in log_sums}
 
     all_features = {**policy.input_features, **policy.output_features}
     norm_map = PI0_NORM_MAP
@@ -271,74 +203,68 @@ def train():
     tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
 
     for _ in range(step, STEPS):
-        start_time = time.perf_counter()
         batch = next(dl_iter)
-        batch = normalize(batch, dataset.stats, all_features, norm_map)
-        batch = _ensure_newline(batch)
-        batch = tokenize_batch(
+        batch = preprocess_pi0(
             batch,
-            tokenizer,
+            stats=dataset.stats,
+            all_features=all_features,
+            norm_map=norm_map,
+            tokenizer=tokenizer,
+            device=device,
             max_length=48,
-            padding_side="right",
-            padding="max_length",
+            add_batch_dim=False,
         )
-        batch = to_device(batch, device)
-        train_tracker.dataloading_s = time.perf_counter() - start_time
 
-        train_tracker, output_dict = update_policy(
-            train_tracker,
+        metrics = update_policy(
             policy,
             batch,
             optimizer,
             grad_clip_norm,
-            accelerator=accelerator,
+            device=device,
             lr_scheduler=lr_scheduler,
         )
 
         step += 1
-        train_tracker.step()
-        is_log_step = LOG_FREQ > 0 and step % LOG_FREQ == 0 and is_main_process
+        for k in log_sums:
+            log_sums[k] += metrics[k]
+            log_counts[k] += 1
+
+        is_log_step = LOG_FREQ > 0 and step % LOG_FREQ == 0
         is_saving_step = step % SAVE_FREQ == 0 or step == STEPS
 
         if is_log_step:
-            logging.info(train_tracker)
+            samples = step * BATCH_SIZE
+            avg_loss = log_sums["loss"] / log_counts["loss"]
+            avg_grad = log_sums["grad_norm"] / log_counts["grad_norm"]
+            logging.info(
+                f"step:{format_big_number(step)} smpl:{format_big_number(samples)} "
+                f"loss:{avg_loss:.3f} grdn:{avg_grad:.3f}"
+            )
             if wandb_logger:
-                wandb_log_dict = train_tracker.to_dict()
-                if output_dict:
-                    wandb_log_dict.update(output_dict)
-                wandb_logger.log_dict(wandb_log_dict, step)
-            train_tracker.reset_averages()
+                wandb_logger.log_dict(
+                    {"steps": step, "samples": samples, "loss": avg_loss, "grad_norm": avg_grad},
+                    step,
+                )
+            for k in log_sums:
+                log_sums[k] = 0.0
+                log_counts[k] = 0
 
         if SAVE_CHECKPOINT and is_saving_step:
-            if is_main_process:
-                logging.info(f"Checkpoint policy after step {step}")
-                checkpoint_dir = get_step_checkpoint_dir(OUTPUT_DIR, STEPS, step)
-                save_checkpoint(
-                    checkpoint_dir=checkpoint_dir,
-                    step=step,
-                    policy=accelerator.unwrap_model(policy),
-                    optimizer=optimizer,
-                    scheduler=lr_scheduler,
-                    is_peft=is_peft,
-                )
-                update_last_checkpoint(checkpoint_dir)
-                if wandb_logger:
-                    wandb_logger.log_policy(checkpoint_dir)
+            logging.info(f"Checkpoint policy after step {step}")
+            checkpoint_dir = get_step_checkpoint_dir(OUTPUT_DIR, STEPS, step)
+            save_checkpoint(
+                checkpoint_dir=checkpoint_dir,
+                step=step,
+                policy=policy,
+                optimizer=optimizer,
+                scheduler=lr_scheduler,
+            )
+            update_last_checkpoint(checkpoint_dir)
+            if wandb_logger:
+                wandb_logger.log_policy(checkpoint_dir)
 
-            accelerator.wait_for_everyone()
-
-    if is_main_process:
-        logging.info("End of training")
-
-        if PUSH_TO_HUB:
-            unwrapped_policy = accelerator.unwrap_model(policy)
-            if is_peft:
-                unwrapped_policy.push_model_to_hub(DATASET_REPO_ID, peft_model=unwrapped_policy)
-            else:
-                unwrapped_policy.push_model_to_hub(DATASET_REPO_ID)
-
-    accelerator.wait_for_everyone()
-    accelerator.end_training()
+    logging.info("End of training")
+    policy.push_model_to_hub(DATASET_REPO_ID)
 
 
 def main():

@@ -21,7 +21,6 @@ from lerobot.datasets.augmentation import image_transforms
 from lerobot.datasets.utils import POLICY_FEATURES, cycle, dataset_to_policy_features
 from lerobot.types import FeatureType, NormalizationMode
 from lerobot.utils.processor_utils import normalize, to_device
-from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.train_utils import set_seed
 from lerobot.utils.utils import format_big_number, init_logging
 from lerobot.utils.wandb_utils import WandBLogger
@@ -481,35 +480,8 @@ def train(cfg: DinoWMConfig = CFG) -> None:
 
     model.train()
 
-    # --- Metrics ---
-    train_metrics = {
-        "loss": AverageMeter("loss", ":.3f"),
-        "grad_norm": AverageMeter("grdn", ":.3f"),
-        "update_s": AverageMeter("updt_s", ":.3f"),
-        "dataloading_s": AverageMeter("data_s", ":.3f"),
-    }
-
-    # Add per-component loss meters
-    loss_keys = ["z_loss", "z_visual_loss", "z_proprio_loss"]
-    if cfg.has_decoder:
-        loss_keys += [
-            "decoder_recon_loss_pred",
-            "decoder_loss_pred",
-            "decoder_recon_loss_reconstructed",
-            "decoder_loss_reconstructed",
-        ]
-    for k in loss_keys:
-        train_metrics[k] = AverageMeter(k, ":.4f")
-
     effective_batch_size = cfg.batch_size * accelerator.num_processes
-    train_tracker = MetricsTracker(
-        effective_batch_size,
-        dataset.num_frames,
-        dataset.num_episodes,
-        train_metrics,
-        steps=0,
-        accelerator=accelerator,
-    )
+    avg_samples_per_ep = dataset.num_frames / dataset.num_episodes
 
     if is_main:
         logging.info("Starting DINO-WM training")
@@ -533,7 +505,7 @@ def train(cfg: DinoWMConfig = CFG) -> None:
         # Normalize (ImageNet for visual; MEAN_STD for state/action)
         batch = normalize(batch, dataset.stats, policy_features, DINO_WM_NORM_MAP)
         batch = to_device(batch, device)
-        train_tracker.dataloading_s = time.perf_counter() - t0
+        dataloading_s = time.perf_counter() - t0
 
         if is_main:
             logging.info(f"[step {step}/{cfg.steps}] forward pass ...")
@@ -577,40 +549,44 @@ def train(cfg: DinoWMConfig = CFG) -> None:
                     total_norm = max(total_norm, norm.item())
             opt.step()
 
-        train_tracker.loss = loss.item()
-        train_tracker.grad_norm = total_norm
-        train_tracker.update_s = time.perf_counter() - t1
+        update_s = time.perf_counter() - t1
 
-        # Update component loss meters
-        gathered_components = accelerator.gather_for_metrics(loss_components)
+        # Gather component losses (all processes must call for distributed sync)
+        gathered = accelerator.gather_for_metrics(loss_components)
+        gathered_components = {}
         if is_main:
-            for k, v in gathered_components.items():
-                if k in train_metrics:
-                    if isinstance(v, torch.Tensor):
-                        v = v.mean().item()
-                    train_metrics[k].update(v)
+            for k, v in gathered.items():
+                if isinstance(v, torch.Tensor):
+                    gathered_components[k] = v.mean().item()
+                else:
+                    gathered_components[k] = v
 
-        train_tracker.step()
-
-        # Log every step (not just log_freq); reset averages each step so values reflect current step.
-        is_log_step = is_main
         is_save_step = step % cfg.save_freq == 0 or step == cfg.steps
 
         if is_main:
+            samples = step * effective_batch_size
+            episodes = samples / avg_samples_per_ep
+            epochs = samples / dataset.num_frames
             logging.info(
                 f"[step {step}/{cfg.steps}] DONE — "
-                f"data={t_data:.3f}s  "
-                f"fwd={t_fwd:.3f}s  bwd={t_bwd:.3f}s  "
-                f"update={time.perf_counter() - t1:.3f}s  "
-                f"loss={loss.item():.4f}  grad_norm={total_norm:.3f}"
+                f"step:{format_big_number(step)} smpl:{format_big_number(samples)} "
+                f"ep:{format_big_number(episodes)} epch:{epochs:.2f} "
+                f"loss={loss.item():.4f} grdn={total_norm:.3f} "
+                f"data_s={dataloading_s:.3f} updt_s={update_s:.3f}"
             )
-
-        if is_log_step:
-            logging.info(train_tracker)
             if wandb_logger:
-                log_dict = train_tracker.to_dict()
+                log_dict = {
+                    "steps": step,
+                    "samples": samples,
+                    "episodes": episodes,
+                    "epochs": epochs,
+                    "loss": loss.item(),
+                    "grad_norm": total_norm,
+                    "update_s": update_s,
+                    "dataloading_s": dataloading_s,
+                    **gathered_components,
+                }
                 wandb_logger.log_dict(log_dict, step)
-            train_tracker.reset_averages()
 
         if cfg.save_checkpoint and is_save_step and is_main:
             logging.info(f"Saving checkpoint at step {step}")

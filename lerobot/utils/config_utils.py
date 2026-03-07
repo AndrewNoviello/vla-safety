@@ -126,11 +126,8 @@ def load_config_from_checkpoint(
     """
     Load a config from a local directory or HuggingFace Hub checkpoint.
 
-    Reads the 'type' field from config.json to dispatch to the correct config class
-    via the policy registry.
+    Reads the 'type' field from config.json to dispatch to the correct config class.
     """
-    from lerobot.policies.registry import get_config_class
-
     model_id = str(pretrained_name_or_path)
     config_file: str | None = None
 
@@ -167,5 +164,10 @@ def load_config_from_checkpoint(
     if type_name is None:
         raise ValueError(f"'type' field missing from {config_file}")
 
-    config_cls = get_config_class(type_name)
+    if type_name == "pi0":
+        from lerobot.policies.pi0.configuration_pi0 import PI0Config
+        config_cls = PI0Config
+    else:
+        raise ValueError(f"Unknown policy type '{type_name}'. Available: ['pi0']")
+
     return _config_from_dict(config_cls, data)

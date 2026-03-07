@@ -12,12 +12,14 @@ if str(_SCRIPT_DIR) not in sys.path:
 import numpy as np
 import torch
 
+from transformers import AutoTokenizer
+
 from lerobot.utils.utils import cast_stats_to_numpy, load_json
 from lerobot.types import FeatureType
-from lerobot.policies.factory import make_pre_post_processors
-from lerobot.policies.pi0 import PI0Policy
+from lerobot.policies.pi0 import PI0Policy, preprocess_pi0, postprocess_pi0
+from lerobot.utils.processor_utils import prepare_stats
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
-from lerobot.policies.utils import prepare_observation_for_inference
+from lerobot.utils.processor_utils import prepare_observation_for_inference
 from lerobot.utils.constants import OBS_STATE
 
 # Hardcoded path to dataset stats for normalization (state/action mean-std)
@@ -233,10 +235,26 @@ def main():
         print(f"Loaded dataset stats from {STATS_PATH}")
     else:
         print(f"Stats file not found at {STATS_PATH}, using no normalization")
+    stats = prepare_stats(dataset_stats)
+    all_features = {**policy.config.input_features, **policy.config.output_features}
+    output_features = dict(policy.config.output_features)
+    norm_map = dict(policy.config.normalization_mapping)
+    tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
 
-    preprocessor, postprocessor = make_pre_post_processors(
-        policy_type="pi0", policy_cfg=policy.config, dataset_stats=dataset_stats
-    )
+    def preprocessor(obs):
+        return preprocess_pi0(
+            obs,
+            stats=stats,
+            all_features=all_features,
+            norm_map=norm_map,
+            tokenizer=tokenizer,
+            device=device,
+            max_length=policy.config.tokenizer_max_length,
+            add_batch_dim=True,
+        )
+
+    def postprocessor(action):
+        return postprocess_pi0(action, stats=stats, output_features=output_features, norm_map=norm_map)
 
     observation = build_observation(
         policy,

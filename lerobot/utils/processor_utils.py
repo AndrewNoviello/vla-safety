@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from typing import Any
+
 import numpy as np
 import torch
 from torch import Tensor
-from lerobot.types import FeatureType, NormalizationMode, PolicyFeature
 
+from lerobot.types import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.utils.constants import (
     ACTION,
     OBS_ENV_STATE,
@@ -17,6 +18,36 @@ from lerobot.utils.constants import (
     OBS_LANGUAGE_TOKENS,
     OBS_STATE,
 )
+
+
+def prepare_observation_for_inference(
+    observation: dict[str, Any],
+    device: str | torch.device,
+    task: str = "",
+    robot_type: str = "",
+) -> dict[str, Any]:
+    """Convert numpy observation to tensors, add task, and move to device."""
+    result = dict(observation)
+    result["task"] = task or ""
+    for key, val in result.items():
+        if key == "task":
+            continue
+        if isinstance(val, np.ndarray):
+            t = torch.from_numpy(val).float()
+            if t.ndim == 3 and t.shape[-1] == 3:
+                t = t.permute(2, 0, 1).unsqueeze(0)
+                t = t / 255.0
+            elif t.ndim == 1:
+                t = t.unsqueeze(0)
+            result[key] = t.to(device)
+        elif isinstance(val, torch.Tensor):
+            if val.ndim == 3 and val.shape[-1] == 3:
+                val = val.permute(2, 0, 1).unsqueeze(0).float() / 255.0
+            elif val.ndim == 1:
+                val = val.unsqueeze(0)
+            result[key] = val.to(device)
+    return result
+
 
 def add_batch_dim(batch: dict[str, Any]) -> dict[str, Any]:
     """Unsqueeze dim=0 on state/image tensors and wrap a str task as a list."""
@@ -46,11 +77,6 @@ def add_batch_dim(batch: dict[str, Any]) -> dict[str, Any]:
         result["task"] = [result["task"]]
 
     return result
-
-
-def move_to_device(data: dict[str, Any], device: str | torch.device) -> dict[str, Any]:
-    """Move all tensors in a flat dict to *device*."""
-    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
 
 
 def to_device(batch: dict, device: torch.device | str) -> dict:

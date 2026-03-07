@@ -1,40 +1,22 @@
 import logging
 import math
-from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
 
 import torch
 from safetensors.torch import load_file, save_file
+from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 
-from lerobot.utils.utils import flatten_dict, unflatten_dict, write_json
+from lerobot.utils.utils import flatten_dict, unflatten_dict, write_json, deserialize_json_into_object
 from lerobot.utils.constants import (
     OPTIMIZER_PARAM_GROUPS,
     OPTIMIZER_STATE,
     SCHEDULER_STATE,
 )
-from lerobot.utils.utils import deserialize_json_into_object
 
-
-# ---------------------------------------------------------------------------
-# Types
-# ---------------------------------------------------------------------------
-
-OptimizerParams = (
-    Iterable[torch.nn.Parameter]
-    | Iterable[dict[str, Any]]
-)
-
-OptimizerResult = tuple[torch.optim.Optimizer, LRScheduler | None, float]
-
-
-# ---------------------------------------------------------------------------
-# Cosine-warmup scheduler (used by every preset)
-# ---------------------------------------------------------------------------
 
 def cosine_warmup_scheduler(
-    optimizer: torch.optim.Optimizer,
+    optimizer: Optimizer,
     num_training_steps: int,
     warmup_steps: int,
     decay_steps: int,
@@ -73,41 +55,9 @@ def cosine_warmup_scheduler(
 
 
 # ---------------------------------------------------------------------------
-# Per-policy presets
-# ---------------------------------------------------------------------------
-
-def make_pi0_optimizer(params: OptimizerParams, num_training_steps: int) -> OptimizerResult:
-    optimizer = torch.optim.AdamW(params, lr=2.5e-5, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.01)
-    scheduler = cosine_warmup_scheduler(
-        optimizer, num_training_steps,
-        warmup_steps=1_000, decay_steps=30_000, peak_lr=2.5e-5, decay_lr=2.5e-6,
-    )
-    return optimizer, scheduler, 1.0
-
-PRESETS: dict[str, Any] = {
-    "pi0": make_pi0_optimizer,
-}
-
-
-# ---------------------------------------------------------------------------
-# Factory (called by the training script)
-# ---------------------------------------------------------------------------
-
-def make_optimizer_and_scheduler(
-    policy_type: str, params: OptimizerParams, num_training_steps: int
-) -> OptimizerResult:
-    """Build optimizer, scheduler, and grad_clip_norm for the given policy type."""
-    if policy_type not in PRESETS:
-        raise ValueError(
-            f"No optimizer preset for policy type '{policy_type}'. "
-            f"Available: {list(PRESETS.keys())}"
-        )
-    return PRESETS[policy_type](params, num_training_steps)
-
-
-# ---------------------------------------------------------------------------
 # Optimizer state save / load  (used by train_utils for checkpoint resume)
 # ---------------------------------------------------------------------------
+
 
 def save_optimizer_state(
     optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer], save_dir: Path
@@ -170,6 +120,7 @@ def _load_single_optimizer_state(optimizer: torch.optim.Optimizer, save_dir: Pat
 # ---------------------------------------------------------------------------
 # Scheduler state save / load  (used by train_utils for checkpoint resume)
 # ---------------------------------------------------------------------------
+
 
 def save_scheduler_state(scheduler: LRScheduler, save_dir: Path) -> None:
     state_dict = scheduler.state_dict()

@@ -9,7 +9,12 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
 from lerobot.utils.utils import flatten_dict, load_json, unflatten_dict, write_json
-from lerobot.optim import load_optimizer_state, load_scheduler_state, save_optimizer_state, save_scheduler_state
+from lerobot.utils.optim_utils import (
+    load_optimizer_state,
+    load_scheduler_state,
+    save_optimizer_state,
+    save_scheduler_state,
+)
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import (
     CHECKPOINTS_DIR,

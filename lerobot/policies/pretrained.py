@@ -17,7 +17,6 @@ from safetensors.torch import load_model as load_model_as_safetensor, save_model
 from torch import Tensor, nn
 from typing_extensions import Unpack
 
-from lerobot.policies.utils import log_model_loading_keys
 from lerobot.utils.config_utils import load_config_from_checkpoint
 from lerobot.utils.hub import HubMixin
 
@@ -135,7 +134,10 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
 
         # Load the model with appropriate kwargs
         missing_keys, unexpected_keys = load_model_as_safetensor(model, model_file, **kwargs)
-        log_model_loading_keys(missing_keys, unexpected_keys)
+        if missing_keys:
+            logging.warning(f"Missing key(s) when loading model: {missing_keys}")
+        if unexpected_keys:
+            logging.warning(f"Unexpected key(s) when loading model: {unexpected_keys}")
 
         # For older versions, manually move to device if needed
         if "device" not in kwargs and map_location != "cpu":

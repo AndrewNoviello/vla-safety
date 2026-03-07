@@ -4,7 +4,6 @@ from pathlib import Path
 from huggingface_hub.constants import HF_HOME
 
 OBS_STR = "observation"
-OBS_PREFIX = OBS_STR + "."
 OBS_ENV_STATE = OBS_STR + ".environment_state"
 OBS_STATE = "state"
 OBS_IMAGE = OBS_STR + ".image"
@@ -17,11 +16,6 @@ OBS_LANGUAGE_SUBTASK_TOKENS = OBS_LANGUAGE_SUBTASK + ".tokens"
 OBS_LANGUAGE_SUBTASK_ATTENTION_MASK = OBS_LANGUAGE_SUBTASK + ".attention_mask"
 
 ACTION = "actions"
-ACTION_PREFIX = ACTION + "."
-REWARD = "next.reward"
-TRUNCATED = "next.truncated"
-DONE = "next.done"
-INFO = "info"
 
 # files & directories
 CHECKPOINTS_DIR = "checkpoints"
