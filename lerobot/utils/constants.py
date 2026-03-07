@@ -5,7 +5,7 @@ from huggingface_hub.constants import HF_HOME
 
 OBS_STR = "observation"
 OBS_ENV_STATE = OBS_STR + ".environment_state"
-OBS_STATE = "state"
+OBS_STATE = "observation.state"
 OBS_IMAGE = OBS_STR + ".image"
 OBS_IMAGES = OBS_IMAGE + "s"
 OBS_LANGUAGE = OBS_STR + ".language"
@@ -15,7 +15,7 @@ OBS_LANGUAGE_SUBTASK = OBS_STR + ".subtask"
 OBS_LANGUAGE_SUBTASK_TOKENS = OBS_LANGUAGE_SUBTASK + ".tokens"
 OBS_LANGUAGE_SUBTASK_ATTENTION_MASK = OBS_LANGUAGE_SUBTASK + ".attention_mask"
 
-ACTION = "actions"
+ACTION = "action"
 
 # files & directories
 CHECKPOINTS_DIR = "checkpoints"

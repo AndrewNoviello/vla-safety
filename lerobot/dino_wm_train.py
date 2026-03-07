@@ -153,10 +153,10 @@ def _make_delta_indices(cfg: DinoWMConfig, features: dict) -> dict[str, list[int
             delta_indices[k] = indices
 
     # State and actions
-    if "state" in features:
-        delta_indices["state"] = indices
-    if "actions" in features:
-        delta_indices["actions"] = indices
+    if "observation.state" in features:
+        delta_indices["observation.state"] = indices
+    if "action" in features:
+        delta_indices["action"] = indices
 
     return delta_indices
 
@@ -306,8 +306,8 @@ def _reformat_batch(
 
     LeRobot format (after normalise + to_device):
         batch[image_key]  : (B, T, C, H, W)  float, ImageNet-normalised
-        batch["state"]    : (B, T, state_dim)
-        batch["actions"]  : (B, T, action_dim)
+        batch["observation.state"]    : (B, T, state_dim)
+        batch["action"]  : (B, T, action_dim)
 
     VWorldModel expects:
         obs = {"visual": (B, T, C, H, W), "proprio": (B, T, proprio_dim)}
@@ -327,9 +327,9 @@ def _reformat_batch(
 
     obs = {
         "visual": visual,
-        "proprio": batch["state"].float(),   # (B, T, state_dim)
+        "proprio": batch["observation.state"].float(),   # (B, T, state_dim)
     }
-    act = batch["actions"].float()   # (B, T, action_dim)
+    act = batch["action"].float()   # (B, T, action_dim)
     return obs, act
 
 
@@ -408,8 +408,8 @@ def train(cfg: DinoWMConfig = CFG) -> None:
 
     delta_indices = _make_delta_indices(cfg, POLICY_FEATURES)
 
-    action_dim: int = POLICY_FEATURES["actions"]["shape"][-1]
-    proprio_dim: int = POLICY_FEATURES["state"]["shape"][-1]
+    action_dim: int = POLICY_FEATURES["action"]["shape"][-1]
+    proprio_dim: int = POLICY_FEATURES["observation.state"]["shape"][-1]
     logging.info(f"action_dim={action_dim}, proprio_dim={proprio_dim}")
 
     accelerator.wait_for_everyone()

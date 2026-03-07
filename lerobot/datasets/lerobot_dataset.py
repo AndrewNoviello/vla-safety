@@ -28,15 +28,18 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.root = HF_LEROBOT_HOME / repo_id
         self.image_transforms = image_transforms
         self.delta_indices = delta_indices
-        self.prompt = prompt
+        self.prompt = ""
         self.root.mkdir(exist_ok=True, parents=True)
+        self._video_dir = self.root / "videos"
+        self._decoder_cache: dict = {}
 
         meta_ok = (self.root / "meta" / "stats.json").exists()
         data_ok = any((self.root / "data").glob("episode_*.parquet"))
-        if not meta_ok or not data_ok:
+        video_ok = any(self._video_dir.glob("episode_*.mp4"))
+        if not meta_ok or not data_ok or not video_ok:
             snapshot_download(
                 self.repo_id, repo_type="dataset", revision="main",
-                local_dir=self.root, allow_patterns=["meta/*", "data/*"],
+                local_dir=self.root, allow_patterns=["meta/*", "data/*", "videos/*"],
             )
 
         self._load_metadata()
@@ -69,6 +72,19 @@ class LeRobotDataset(torch.utils.data.Dataset):
             boundaries[ep] = (start, len(episode_indices))
         return boundaries
 
+    def _get_video_decoder(self, video_path: Path):
+        key = str(video_path)
+        if key not in self._decoder_cache:
+            from torchcodec.decoders import VideoDecoder
+            self._decoder_cache[key] = VideoDecoder(key)
+        return self._decoder_cache[key]
+
+    def _load_video_frames(self, ep_idx: int, frame_indices: list[int]) -> torch.Tensor:
+        path = self._video_dir / f"episode_{ep_idx:03d}.mp4"
+        decoder = self._get_video_decoder(path)
+        batch = decoder.get_frames_at(indices=frame_indices)
+        return (batch.data / 255.0).float()
+
     def _load_hf_dataset(self) -> datasets.Dataset:
         hf_dataset = load_episode_parquets(self.root / "data", features=PARQUET_FEATURES)
         hf_dataset.set_transform(hf_transform_to_torch)
@@ -90,10 +106,15 @@ class LeRobotDataset(torch.utils.data.Dataset):
         }
         return query_indices, padding
 
-    def _query_hf_dataset(self, query_indices: dict[str, list[int]]) -> dict:
+    def _query_hf_dataset(self, query_indices: dict[str, list[int]], ep_idx: int | None = None) -> dict:
         result: dict = {}
+        video_keys = set(self._keys_by_dtype("image", "video"))
         for key, q_idx in query_indices.items():
-            result[key] = torch.stack(self.hf_dataset[key][q_idx])
+            if key in video_keys:
+                frame_indices = [int(self.hf_dataset[i]["frame_index"]) for i in q_idx]
+                result[key] = self._load_video_frames(ep_idx, frame_indices)
+            else:
+                result[key] = torch.stack(self.hf_dataset[key][q_idx])
         return result
 
     def __len__(self):
@@ -103,10 +124,14 @@ class LeRobotDataset(torch.utils.data.Dataset):
         item = self.hf_dataset[idx]
         ep_idx = int(item["episode_index"])
         abs_idx = int(item["index"])
+        frame_idx = int(item["frame_index"])
+
+        item["image"] = self._load_video_frames(ep_idx, [frame_idx]).squeeze(0)
+
 
         if self.delta_indices is not None:
             query_indices, padding = self._get_query_indices(abs_idx, ep_idx)
-            query_result = self._query_hf_dataset(query_indices)
+            query_result = self._query_hf_dataset(query_indices, ep_idx)
             item = {**item, **padding}
             for key, val in query_result.items():
                 item[key] = val

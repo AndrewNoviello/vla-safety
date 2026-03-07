@@ -15,21 +15,20 @@ from lerobot.utils.utils import cast_stats_to_numpy, load_json, suppress_progres
 STATS_PATH = "meta/stats.json"
 
 PARQUET_FEATURES = datasets.Features({
-    "image0": datasets.Image(),
     "frame_index": datasets.Value("int64"),
-    "state": datasets.Sequence(length=6, feature=datasets.Value("float32")),
-    "actions": datasets.Sequence(length=6, feature=datasets.Value("float32")),
-    "timestamp": datasets.Value("float32"),
+    "observation.state": datasets.Sequence(length=6, feature=datasets.Value("float64")),
+    "action": datasets.Sequence(length=6, feature=datasets.Value("float64")),
+    "timestamp": datasets.Value("float64"),
     "episode_index": datasets.Value("int64"),
     "index": datasets.Value("int64"),
     "task_index": datasets.Value("int64"),
 })
 
 POLICY_FEATURES = {
-    "image0": {"dtype": "image", "shape": (224, 224, 3)},
+    "image": {"dtype": "image", "shape": (224, 224, 3)},
     "frame_index": {"dtype": "int64", "shape": (1,)},
-    "state": {"dtype": "float32", "shape": (6,)},
-    "actions": {"dtype": "float32", "shape": (6,)},
+    "observation.state": {"dtype": "float32", "shape": (6,)},
+    "action": {"dtype": "float32", "shape": (6,)},
     "timestamp": {"dtype": "float32", "shape": (1,)},
     "episode_index": {"dtype": "int64", "shape": (1,)},
     "index": {"dtype": "int64", "shape": (1,)},

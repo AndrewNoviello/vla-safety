@@ -137,7 +137,7 @@ def train():
         torch.backends.cuda.matmul.allow_tf32 = True
 
     image_transforms_fn = image_transforms()
-    delta_indices = {"actions": list(range(PI0_CHUNK_SIZE))}
+    delta_indices = {"action": list(range(PI0_CHUNK_SIZE))}
 
     dataset = LeRobotDataset(
         DATASET_REPO_ID,
