@@ -73,7 +73,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         _bootstrap = self._load_hf_dataset()
         self._episode_boundaries = self._build_episode_boundaries(_bootstrap)
         self.num_frames = len(_bootstrap)
-        self.num_episodes = len(set(_bootstrap["episode_index"]))
+        self.num_episodes = len(self._episode_boundaries)
         del _bootstrap
 
         # Will be populated lazily inside each worker process.
@@ -89,7 +89,10 @@ class LeRobotDataset(torch.utils.data.Dataset):
         return self._hf_dataset
 
     def _load_metadata(self):
-        self._stats = load_stats(self.root)
+        raw_stats = load_stats(self.root)
+        if raw_stats and "state" in raw_stats and "observation.state" not in raw_stats:
+            raw_stats["observation.state"] = raw_stats.pop("state")
+        self._stats = raw_stats
         self.features = POLICY_FEATURES
         self.stats = self._stats
 

@@ -217,6 +217,10 @@ def normalize(
         if key in stats:
             sub = _ensure_stats_compat(stats, key, tensor)
             mean, std = sub["mean"], sub["std"]
+            # Reshape (C,) channel stats to broadcast against (..., C, H, W) spatial tensors
+            if mean.ndim == 1 and tensor.ndim >= 4:
+                mean = mean.view([1] * (tensor.ndim - 3) + [mean.shape[0], 1, 1])
+                std  = std.view( [1] * (tensor.ndim - 3) + [std.shape[0],  1, 1])
             result[key] = (tensor - mean) / (std + eps)
     return result
 

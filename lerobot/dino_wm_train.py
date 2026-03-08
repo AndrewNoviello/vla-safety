@@ -5,7 +5,6 @@ import time
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 from termcolor import colored
@@ -17,6 +16,7 @@ from termcolor import colored
 # ---------------------------------------------------------------------------
 from lerobot.configs.dino_wm_config import DinoWMConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from torchvision.transforms import v2 as T
 from lerobot.datasets.utils import POLICY_FEATURES, cycle, dataset_to_policy_features
 from lerobot.types import FeatureType, NormalizationMode
 from lerobot.utils.processor_utils import normalize, to_device
@@ -299,7 +299,6 @@ def _make_optimizers(cfg: DinoWMConfig, sub: dict) -> list[torch.optim.Optimizer
 def _reformat_batch(
     batch: dict,
     image_key: str,
-    img_size: int,
 ) -> tuple[dict, torch.Tensor]:
     """Convert a LeRobot batch dict into VWorldModel inputs.
 
@@ -313,16 +312,6 @@ def _reformat_batch(
         act = (B, T, action_dim)
     """
     visual = batch[image_key].float()   # (B, T, C, H, W)
-
-    # Resize spatial dims to img_size if the dataset resolution differs.
-    if visual.shape[-1] != img_size or visual.shape[-2] != img_size:
-        B, T, C, H, W = visual.shape
-        visual = F.interpolate(
-            visual.reshape(B * T, C, H, W),
-            size=(img_size, img_size),
-            mode="bilinear",
-            align_corners=False,
-        ).reshape(B, T, C, img_size, img_size)
 
     obs = {
         "visual": visual,
@@ -414,7 +403,7 @@ def train(cfg: DinoWMConfig = CFG) -> None:
     dataset = LeRobotDataset(
         cfg.dataset_repo_id,
         delta_indices=delta_indices,
-        image_transforms=None,
+        image_transforms=T.Resize((cfg.img_size, cfg.img_size), antialias=True),
     )
 
     # Optionally preload all video frames into RAM before spawning workers.
@@ -509,7 +498,7 @@ def train(cfg: DinoWMConfig = CFG) -> None:
         t1 = time.perf_counter()
         model.train()
 
-        obs, act = _reformat_batch(batch, image_key, cfg.img_size)
+        obs, act = _reformat_batch(batch, image_key)
 
         with accelerator.autocast():
             _z_pred, _vis_pred, _vis_recon, loss, loss_components = (
