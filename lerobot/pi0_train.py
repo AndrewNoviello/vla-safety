@@ -8,7 +8,6 @@ from torch.optim import Optimizer
 
 from lerobot.types import FeatureType, NormalizationMode
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.augmentation import image_transforms
 from lerobot.datasets.utils import (
     POLICY_FEATURES,
     cycle,
@@ -136,13 +135,11 @@ def train():
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
 
-    image_transforms_fn = image_transforms()
     delta_indices = {"action": list(range(PI0_CHUNK_SIZE))}
-
     dataset = LeRobotDataset(
         DATASET_REPO_ID,
         delta_indices=delta_indices,
-        image_transforms=image_transforms_fn,
+        image_transforms=None,
     )
 
     # --- Policy ---

@@ -5,7 +5,6 @@ import time
 import torch
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.augmentation import image_transforms
 from lerobot.datasets.utils import cycle
 
 # =====================================================================
@@ -15,16 +14,17 @@ from lerobot.datasets.utils import cycle
 DATASET_REPO_ID = "AndrewNoviello/domino-success-v2"
 BATCH_SIZE = 32
 NUM_WORKERS = 8
-STEPS = 10
+STEPS = 100
 PI0_CHUNK_SIZE = 50
 
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    delta_indices = {"action": list(range(PI0_CHUNK_SIZE))}
     dataset = LeRobotDataset(
         DATASET_REPO_ID,
-        delta_indices=None,
+        delta_indices=delta_indices,
         image_transforms=None,
     )
 

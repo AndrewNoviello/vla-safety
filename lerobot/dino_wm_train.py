@@ -17,7 +17,6 @@ from termcolor import colored
 # ---------------------------------------------------------------------------
 from lerobot.configs.dino_wm_config import DinoWMConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.augmentation import image_transforms
 from lerobot.datasets.utils import POLICY_FEATURES, cycle, dataset_to_policy_features
 from lerobot.types import FeatureType, NormalizationMode
 from lerobot.utils.processor_utils import normalize, to_device
@@ -45,7 +44,7 @@ from models.proprio import ProprioceptiveEmbedding  # noqa: E402
 # =====================================================================
 
 CFG = DinoWMConfig(
-    dataset_repo_id="AndrewNoviello/domino-world-v1",
+    dataset_repo_id="AndrewNoviello/domino-world-v2",
 
     # Temporal window
     # frameskip=3 subsamples 30fps → effective 10fps so consecutive frames
@@ -94,7 +93,7 @@ CFG = DinoWMConfig(
     grad_clip_norm=1.0,
 
     # Logging
-    output_dir="outputs/dino_wm",
+    output_dir="outputs/dino_wm_v2",
     log_freq=100,
     save_freq=10_000,
     save_checkpoint=True,
@@ -103,7 +102,7 @@ CFG = DinoWMConfig(
     wandb_entity=None,
 
     # Upload checkpoints to this HuggingFace model repo after training
-    hf_model_repo_id="AndrewNoviello/domino-world-wm",
+    hf_model_repo_id="AndrewNoviello/domino-world-wm-v2",
 )
 
 # =====================================================================
@@ -401,8 +400,6 @@ def train(cfg: DinoWMConfig = CFG) -> None:
     if is_main:
         logging.info("Creating dataset (main process first)")
 
-    image_transforms_fn = image_transforms()
-
     image_key = _detect_image_key(POLICY_FEATURES)
     logging.info(f"Detected image key: {image_key!r}")
 
@@ -417,7 +414,7 @@ def train(cfg: DinoWMConfig = CFG) -> None:
     dataset = LeRobotDataset(
         cfg.dataset_repo_id,
         delta_indices=delta_indices,
-        image_transforms=image_transforms_fn,
+        image_transforms=None,
     )
 
     # Optionally preload all video frames into RAM before spawning workers.
