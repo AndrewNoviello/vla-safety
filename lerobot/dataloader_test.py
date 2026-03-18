@@ -7,10 +7,6 @@ import torch
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.utils import cycle
 
-# =====================================================================
-# Configuration -- matches pi0_train.py
-# =====================================================================
-
 DATASET_REPO_ID = "AndrewNoviello/domino-success-v2"
 BATCH_SIZE = 32
 NUM_WORKERS = 8

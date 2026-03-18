@@ -31,11 +31,6 @@ DEFAULT_PROMPT = (
     "on top of the other two dominos to form an arch"
 )
 
-# -----------------------------------------------------------------------------
-# Image and observation helpers (no disk I/O for server path)
-# -----------------------------------------------------------------------------
-
-
 def decode_image_to_numpy(data: bytes, size: tuple[int, int] = (224, 224)) -> np.ndarray:
     """Decode image bytes (JPEG/PNG) to (H, W, 3) uint8, resized to size."""
     try:
@@ -129,10 +124,6 @@ def run_inference(
     return action
 
 
-# -----------------------------------------------------------------------------
-# App and state
-# -----------------------------------------------------------------------------
-
 app = FastAPI(
     title="PI0 Offline Inference",
     description="Send images + prompt (and optional proprio), get predicted actions.",
@@ -195,20 +186,10 @@ def startup():
     print("Policy loaded. Ready for /predict.")
 
 
-# -----------------------------------------------------------------------------
-# Request/response models
-# -----------------------------------------------------------------------------
-
-
 class PredictJSONRequest(BaseModel):
     prompt: str | None = Field(None, description="Text instruction for the policy (uses default if omitted)")
     images: list[str] | None = Field(None, description="Base64-encoded images (1 or N)")
     proprio: list[float] | None = Field(None, description="State vector (floats)")
-
-
-# -----------------------------------------------------------------------------
-# Endpoints
-# -----------------------------------------------------------------------------
 
 
 @app.get("/")

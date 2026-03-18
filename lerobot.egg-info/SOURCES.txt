@@ -1,6 +1,8 @@
 pyproject.toml
 ../lerobot/__init__.py
 ../lerobot/dataloader_test.py
+../lerobot/dino_wm_inference.py
+../lerobot/dino_wm_test.py
 ../lerobot/dino_wm_train.py
 ../lerobot/pi0_train.py
 ../lerobot/types.py

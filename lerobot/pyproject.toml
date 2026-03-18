@@ -208,7 +208,6 @@ lerobot-imgtransform-viz="lerobot.scripts.lerobot_imgtransform_viz:main"
 lerobot-edit-dataset="lerobot.scripts.lerobot_edit_dataset:main"
 lerobot-setup-can="lerobot.scripts.lerobot_setup_can:main"
 
-# ---------------- Tool Configurations ----------------
 [tool.setuptools.packages.find]
 where = [".."]
 include = ["lerobot*"]

@@ -54,11 +54,6 @@ def cosine_warmup_scheduler(
     return LambdaLR(optimizer, lr_lambda, -1)
 
 
-# ---------------------------------------------------------------------------
-# Optimizer state save / load  (used by train_utils for checkpoint resume)
-# ---------------------------------------------------------------------------
-
-
 def save_optimizer_state(
     optimizer: torch.optim.Optimizer | dict[str, torch.optim.Optimizer], save_dir: Path
 ) -> None:
@@ -115,11 +110,6 @@ def _load_single_optimizer_state(optimizer: torch.optim.Optimizer, save_dir: Pat
 
     optimizer.load_state_dict(loaded_state_dict)
     return optimizer
-
-
-# ---------------------------------------------------------------------------
-# Scheduler state save / load  (used by train_utils for checkpoint resume)
-# ---------------------------------------------------------------------------
 
 
 def save_scheduler_state(scheduler: LRScheduler, save_dir: Path) -> None:

@@ -30,9 +30,6 @@ import numpy as np
 import torch
 from torchvision.transforms import v2 as TVT  # avoid shadowing frame-count var T
 
-# ---------------------------------------------------------------------------
-# lerobot imports FIRST (dino_wm path must not be on sys.path yet)
-# ---------------------------------------------------------------------------
 from lerobot.configs.dino_wm_config import DinoWMConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.utils import POLICY_FEATURES, dataset_to_policy_features
@@ -45,10 +42,6 @@ from dino_wm_train import CFG, DINO_WM_NORM_MAP
 # Inference wrapper (also ensures dino_wm models are importable)
 from dino_wm_inference import DinoWMInference, _ACTION_DIM, _PROPRIO_DIM
 
-
-# ---------------------------------------------------------------------------
-# Episode loading
-# ---------------------------------------------------------------------------
 
 def load_episode(
     dataset: LeRobotDataset,
@@ -101,10 +94,6 @@ def load_episode(
     return images, states, actions
 
 
-# ---------------------------------------------------------------------------
-# Video utilities
-# ---------------------------------------------------------------------------
-
 def _to_uint8_hwc(frames: torch.Tensor) -> np.ndarray:
     """Convert (T, 3, H, W) float tensor → (T, H, W, 3) uint8 numpy."""
     frames = frames.detach().cpu().clamp(0.0, 1.0)
@@ -146,10 +135,6 @@ def save_comparison_video(
         print(f"  Saved {len(combined)} PNG frames to {frames_dir}/")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main():
     parser = argparse.ArgumentParser(
         description="Compare real trajectory vs. DINO world-model on one episode."
@@ -183,9 +168,6 @@ def main():
     output_path = Path(args.output or f"wm_comparison_ep{args.episode:03d}.mp4")
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-    # -----------------------------------------------------------------------
-    # Dataset — same config as training, no delta_indices (we load manually)
-    # -----------------------------------------------------------------------
     print(f"Loading dataset: {CFG.dataset_repo_id}")
     dataset = LeRobotDataset(
         CFG.dataset_repo_id,
@@ -195,9 +177,6 @@ def main():
     policy_features = dataset_to_policy_features(POLICY_FEATURES)
     print(f"  {dataset.num_episodes} episodes, {dataset.num_frames} total frames")
 
-    # -----------------------------------------------------------------------
-    # Load episode at frameskip intervals
-    # -----------------------------------------------------------------------
     print(f"\nLoading episode {args.episode} (frameskip={CFG.frameskip}) ...")
     images, states, actions = load_episode(dataset, args.episode, CFG)
     num_frames = images.shape[0]
@@ -210,9 +189,6 @@ def main():
             f"num_hist+1 = {CFG.num_hist + 1} frames."
         )
 
-    # -----------------------------------------------------------------------
-    # Normalize state and action (images stay in [0, 1] — no stats key match)
-    # -----------------------------------------------------------------------
     norm_batch = normalize(
         {"observation.state": states, "action": actions},
         dataset.stats,
@@ -222,9 +198,6 @@ def main():
     states_norm  = norm_batch["observation.state"]   # (T, 6)
     actions_norm = norm_batch["action"]              # (T, 6)
 
-    # -----------------------------------------------------------------------
-    # Prepare inputs for rollout
-    # -----------------------------------------------------------------------
     obs_0 = {
         # Seed frames: first num_hist real observations
         "visual":  images[:CFG.num_hist].unsqueeze(0).to(device),   # (1, num_hist, 3, H, W)
@@ -233,9 +206,6 @@ def main():
     # Actions for ALL frames (seed + future); rollout() splits internally
     all_actions = actions_norm.unsqueeze(0).to(device)   # (1, T, 6)
 
-    # -----------------------------------------------------------------------
-    # Load world model and run rollout
-    # -----------------------------------------------------------------------
     local_pt = args.checkpoint if Path(args.checkpoint).exists() else None
     hf_filename = args.checkpoint if local_pt is None else None
 
@@ -252,9 +222,6 @@ def main():
     # wm_visual: (1, num_frames + 1, 3, H, W)  — rollout yields one extra step
     wm_frames = wm_visual[0, :num_frames]   # (T, 3, H, W)
 
-    # -----------------------------------------------------------------------
-    # Save comparison video
-    # -----------------------------------------------------------------------
     effective_fps = 30.0 / CFG.frameskip
     save_comparison_video(
         real_frames=images,

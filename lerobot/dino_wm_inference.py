@@ -21,10 +21,6 @@ from pathlib import Path
 
 import torch
 
-# ---------------------------------------------------------------------------
-# lerobot imports FIRST.  dino_wm has a local datasets/ package that would
-# shadow the HuggingFace datasets library if its path were on sys.path first.
-# ---------------------------------------------------------------------------
 from lerobot.configs.dino_wm_config import DinoWMConfig
 from lerobot.datasets.utils import POLICY_FEATURES
 
@@ -37,16 +33,9 @@ from einops import rearrange  # noqa: E402
 
 from huggingface_hub import hf_hub_download, list_repo_files
 
-# ---------------------------------------------------------------------------
-# Constants derived from the training dataset feature spec
-# ---------------------------------------------------------------------------
 _ACTION_DIM: int = POLICY_FEATURES["action"]["shape"][-1]         # 6
 _PROPRIO_DIM: int = POLICY_FEATURES["observation.state"]["shape"][-1]  # 6
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _resolve_model_path(
     hf_repo_id: str,
@@ -89,10 +78,6 @@ def _resolve_model_path(
     )
     return Path(path)
 
-
-# ---------------------------------------------------------------------------
-# Main inference class
-# ---------------------------------------------------------------------------
 
 class DinoWMInference:
     """Wraps a trained VWorldModel for inference.
@@ -139,10 +124,6 @@ class DinoWMInference:
         model.eval()
         self.model: VWorldModel = model
         print(f"Model ready on {self.device}.")
-
-    # ------------------------------------------------------------------
-    # Core inference methods
-    # ------------------------------------------------------------------
 
     @torch.no_grad()
     def encode(self, obs: dict, act: torch.Tensor) -> torch.Tensor:
@@ -228,10 +209,6 @@ class DinoWMInference:
         wm_visual = self.decode_visual(z_obses["visual"])
         return z_obses, wm_visual
 
-
-# ---------------------------------------------------------------------------
-# Standalone sanity check
-# ---------------------------------------------------------------------------
 
 def _parse_args():
     import argparse

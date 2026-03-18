@@ -16,12 +16,6 @@ from lerobot.datasets.utils import (
 from lerobot.utils.constants import HF_LEROBOT_HOME
 
 
-# ---------------------------------------------------------------------------
-# Fix 2: Module-level VideoDecoder cache with a Lock.
-# One decoder per video path, per process. Each DataLoader worker gets its
-# own module-level instance (via fork/spawn), so no cross-process sharing.
-# The Lock makes it safe if threads ever access the same worker's cache.
-# ---------------------------------------------------------------------------
 class _VideoDecoderCache:
     def __init__(self) -> None:
         self._cache: dict = {}
@@ -79,9 +73,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
         # Will be populated lazily inside each worker process.
         self._hf_dataset: datasets.Dataset | None = None
 
-    # ------------------------------------------------------------------
-    # Fix 1: lazy HF dataset property
-    # ------------------------------------------------------------------
     @property
     def hf_dataset(self) -> datasets.Dataset:
         if self._hf_dataset is None:

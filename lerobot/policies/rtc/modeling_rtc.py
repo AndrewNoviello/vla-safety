@@ -29,7 +29,6 @@ class RTCProcessor:
                 maxlen=rtc_config.debug_maxlen,
             )
 
-    # ====================== Tracker Proxy Methods ======================
     def track(
         self,
         time: float | Tensor,
@@ -87,8 +86,6 @@ class RTCProcessor:
         """
         if self.tracker is not None:
             self.tracker.reset()
-
-    # ====================== End Tracker Proxy Methods ======================
 
     def denoise_step(
         self,

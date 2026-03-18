@@ -17,11 +17,6 @@ JsonLike = str | int | float | bool | None | list["JsonLike"] | dict[str, "JsonL
 T = TypeVar("T", bound=JsonLike)
 
 
-# ---------------------------------------------------------------------------
-# Dict serialization
-# ---------------------------------------------------------------------------
-
-
 def flatten_dict(d: dict, parent_key: str = "", sep: str = "/") -> dict:
     items = []
     for k, v in d.items():
@@ -42,11 +37,6 @@ def unflatten_dict(d: dict, sep: str = "/") -> dict:
             cur = cur.setdefault(part, {})
         cur[parts[-1]] = value
     return out
-
-
-# ---------------------------------------------------------------------------
-# JSON I/O
-# ---------------------------------------------------------------------------
 
 
 def load_json(fpath: Path) -> Any:

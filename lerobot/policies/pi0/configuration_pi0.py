@@ -82,10 +82,6 @@ class PI0Config:
     def reward_delta_indices(self) -> None:
         return None
 
-    # ------------------------------------------------------------------ #
-    # Serialization                                                       #
-    # ------------------------------------------------------------------ #
-
     def _save_pretrained(self, save_directory: Path) -> None:
         save_config(self, save_directory, type_name=self.type)
 

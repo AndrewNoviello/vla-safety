@@ -4,18 +4,12 @@ from typing import Optional
 
 @dataclass
 class DinoWMConfig:
-    # ------------------------------------------------------------------
-    # Dataset
-    # ------------------------------------------------------------------
     dataset_repo_id: str = "lerobot/pusht_image"
     # Decode ALL video frames into RAM once before training (Linux CoW fork
     # means workers inherit the dict at zero copy cost). Eliminates all I/O
     # and keyframe-seek overhead during training. Use when dataset fits in RAM.
     preload_frames: bool = False
 
-    # ------------------------------------------------------------------
-    # Temporal window
-    # ------------------------------------------------------------------
     # Number of historical (context) frames fed to the predictor.
     num_hist: int = 3
     # Number of future frames to predict (only 1 is supported).
@@ -23,17 +17,11 @@ class DinoWMConfig:
     # Frame sub-sampling: use every Nth frame from the dataset trajectory.
     frameskip: int = 1
 
-    # ------------------------------------------------------------------
-    # Image / encoder settings
-    # ------------------------------------------------------------------
     img_size: int = 224          # Final spatial resolution fed to the decoder
     encoder_name: str = "dinov2_vits14"
     encoder_feature_key: str = "x_norm_patchtokens"  # or "x_norm_clstoken"
     train_encoder: bool = False  # Keep DINO frozen
 
-    # ------------------------------------------------------------------
-    # Action / proprio embedding
-    # ------------------------------------------------------------------
     action_emb_dim: int = 10
     proprio_emb_dim: int = 10
     # How many times the action/proprio embedding is repeated along the
@@ -47,9 +35,6 @@ class DinoWMConfig:
     #     on action_emb_dim / proprio_emb_dim).
     concat_dim: int = 1
 
-    # ------------------------------------------------------------------
-    # Predictor (ViT)
-    # ------------------------------------------------------------------
     has_predictor: bool = True
     train_predictor: bool = True
     predictor_depth: int = 6
@@ -58,18 +43,12 @@ class DinoWMConfig:
     predictor_dropout: float = 0.1
     predictor_emb_dropout: float = 0.0
 
-    # ------------------------------------------------------------------
-    # Decoder
-    # ------------------------------------------------------------------
     has_decoder: bool = True
     train_decoder: bool = True
     decoder_channel: int = 384
     decoder_n_res_block: int = 4
     decoder_n_res_channel: int = 128
 
-    # ------------------------------------------------------------------
-    # Training hyper-parameters
-    # ------------------------------------------------------------------
     steps: int = 100_000
     batch_size: int = 32
     num_workers: int = 4
@@ -80,9 +59,6 @@ class DinoWMConfig:
     action_encoder_lr: float = 5e-4
     grad_clip_norm: float = 1.0
 
-    # ------------------------------------------------------------------
-    # Logging / checkpointing
-    # ------------------------------------------------------------------
     output_dir: str = "outputs/dino_wm"
     log_freq: int = 100
     save_freq: int = 10_000

@@ -34,10 +34,6 @@ from lerobot.utils.utils import (
 )
 from lerobot.utils.wandb_utils import WandBLogger
 
-# =====================================================================
-# Configuration -- edit these values for your experiment
-# =====================================================================
-
 DATASET_REPO_ID = "lerobot/aloha_sim_insertion_scripted"
 
 PRETRAINED_PATH = None
@@ -59,11 +55,6 @@ OUTPUT_DIR = 'outputs/aloha_sim_insertion_scripted'
 
 # PI0 chunk size (number of action steps)
 PI0_CHUNK_SIZE = 50
-
-# =====================================================================
-# Training logic
-# =====================================================================
-
 
 def update_policy(
     policy: PreTrainedPolicy,
@@ -142,7 +133,6 @@ def train():
         image_transforms=None,
     )
 
-    # --- Policy ---
     _features = dataset_to_policy_features(POLICY_FEATURES)
     _input_features = {k: v for k, v in _features.items() if v.type is not FeatureType.ACTION}
     _output_features = {k: v for k, v in _features.items() if v.type is FeatureType.ACTION}
@@ -158,7 +148,6 @@ def train():
         policy = PI0Policy(config)
     policy = policy.to(device)
 
-    # --- Optimizer ---
     optimizer = torch.optim.AdamW(
         policy.parameters(), lr=2.5e-5, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.01
     )
@@ -176,7 +165,6 @@ def train():
     logging.info(f"steps={STEPS} ({format_big_number(STEPS)}) | dataset: {format_big_number(dataset.num_frames)} frames, {dataset.num_episodes} episodes")
     logging.info(f"Batch size: {BATCH_SIZE} | params: {format_big_number(num_learnable_params)} learnable / {format_big_number(num_total_params)} total")
 
-    # --- Dataloader ---
     dataloader = torch.utils.data.DataLoader(
         dataset,
         num_workers=NUM_WORKERS,

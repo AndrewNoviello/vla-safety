@@ -144,10 +144,6 @@ def tokenize_batch(
     return batch
 
 
-# ---------------------------------------------------------------------------
-# Normalization
-# ---------------------------------------------------------------------------
-
 def prepare_stats(
     raw_stats: dict[str, dict[str, Any]] | None,
     device: str | torch.device | None = None,

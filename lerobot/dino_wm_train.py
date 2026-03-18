@@ -9,11 +9,6 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 from termcolor import colored
 
-# ---------------------------------------------------------------------------
-# lerobot imports come FIRST.  dino_wm has a local `datasets/` package that
-# would shadow the HuggingFace `datasets` library if its path were on
-# sys.path before the lerobot imports below.
-# ---------------------------------------------------------------------------
 from lerobot.configs.dino_wm_config import DinoWMConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from torchvision.transforms import v2 as T
@@ -24,10 +19,6 @@ from lerobot.utils.train_utils import set_seed
 from lerobot.utils.utils import format_big_number, init_logging
 from lerobot.utils.wandb_utils import WandBLogger
 
-# ---------------------------------------------------------------------------
-# Add dino_wm to sys.path AFTER lerobot imports to avoid the local
-# `dino_wm/datasets/` package shadowing the HuggingFace `datasets` library.
-# ---------------------------------------------------------------------------
 DINO_WM_PATH = Path(__file__).resolve().parent.parent / "dino_wm"
 if str(DINO_WM_PATH) not in sys.path:
     sys.path.insert(0, str(DINO_WM_PATH))
@@ -38,10 +29,6 @@ from models.dino import DinoV2Encoder  # noqa: E402
 from models.vit import ViTPredictor  # noqa: E402
 from models.decoder import Decoder  # noqa: E402
 from models.proprio import ProprioceptiveEmbedding  # noqa: E402
-
-# =====================================================================
-# Configuration -- edit these values for your experiment
-# =====================================================================
 
 CFG = DinoWMConfig(
     dataset_repo_id="AndrewNoviello/domino-world-v2",
@@ -105,9 +92,6 @@ CFG = DinoWMConfig(
     hf_model_repo_id="AndrewNoviello/domino-world-wm-v2",
 )
 
-# =====================================================================
-# Normalization map (analogous to PI0_NORM_MAP in lerobot_train.py)
-# =====================================================================
 # VISUAL: normalize() always applies ImageNet mean/std for VISUAL features
 #         (hardcoded in normalize()), which is correct for DinoV2.
 # STATE / ACTION: use MEAN_STD from dataset statistics.
@@ -117,10 +101,6 @@ DINO_WM_NORM_MAP = {
     FeatureType.ACTION: NormalizationMode.MEAN_STD,
 }
 
-
-# =====================================================================
-# Helpers
-# =====================================================================
 
 def _detect_image_key(features: dict) -> str:
     """Return the first image-dtype key in the dataset."""
@@ -170,7 +150,6 @@ def _build_model(
     sub_modules_dict contains references to individually-optimised
     sub-modules so that the training loop can call step() on them.
     """
-    # --- Encoder ---
     encoder = DinoV2Encoder(
         name=cfg.encoder_name,
         feature_key=cfg.encoder_feature_key,
@@ -181,7 +160,6 @@ def _build_model(
         for p in encoder.parameters():
             p.requires_grad = False
 
-    # --- Proprio / Action encoders ---
     proprio_encoder = ProprioceptiveEmbedding(
         in_chans=proprio_dim,
         emb_dim=cfg.proprio_emb_dim,
@@ -191,7 +169,6 @@ def _build_model(
         emb_dim=cfg.action_emb_dim,
     )
 
-    # --- Predictor ---
     predictor = None
     if cfg.has_predictor:
         # Number of visual patches after the encoder resize
@@ -225,7 +202,6 @@ def _build_model(
             for p in predictor.parameters():
                 p.requires_grad = False
 
-    # --- Decoder ---
     decoder = None
     if cfg.has_decoder:
         decoder = Decoder(
@@ -238,7 +214,6 @@ def _build_model(
             for p in decoder.parameters():
                 p.requires_grad = False
 
-    # --- World model ---
     model = VWorldModel(
         image_size=cfg.img_size,
         num_hist=cfg.num_hist,
@@ -350,10 +325,6 @@ def _save_checkpoint(
     logging.info(f"Saved checkpoint to {checkpoint_dir}")
 
 
-# =====================================================================
-# Main training function
-# =====================================================================
-
 def train(cfg: DinoWMConfig = CFG) -> None:
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
@@ -364,7 +335,6 @@ def train(cfg: DinoWMConfig = CFG) -> None:
     init_logging(accelerator=accelerator)
     is_main = accelerator.is_main_process
 
-    # --- W&B ---
     wandb_logger = None
     if cfg.wandb_enable and is_main:
         wandb_logger = WandBLogger(
@@ -385,7 +355,6 @@ def train(cfg: DinoWMConfig = CFG) -> None:
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
 
-    # --- Dataset ---
     if is_main:
         logging.info("Creating dataset (main process first)")
 
@@ -420,7 +389,6 @@ def train(cfg: DinoWMConfig = CFG) -> None:
     # Build PolicyFeature dict for use with normalize()
     policy_features = dataset_to_policy_features(POLICY_FEATURES)
 
-    # --- Model ---
     if is_main:
         logging.info("Building DINO-WM model")
 
@@ -439,10 +407,8 @@ def train(cfg: DinoWMConfig = CFG) -> None:
         logging.info(f"num_learnable_params={num_learnable} ({format_big_number(num_learnable)})")
         logging.info(f"num_total_params={num_total} ({format_big_number(num_total)})")
 
-    # --- Optimizers ---
     optimizers = _make_optimizers(cfg, sub_modules)
 
-    # --- Dataloader ---
     dataloader = torch.utils.data.DataLoader(
         dataset,
         num_workers=cfg.num_workers,
