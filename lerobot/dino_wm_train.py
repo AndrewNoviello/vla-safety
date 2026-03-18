@@ -82,7 +82,7 @@ CFG = DinoWMConfig(
     decoder_n_res_channel=128,
 
     # Training — larger batch/workers for better GPU utilization (A40 has headroom)
-    steps=25_000,
+    steps=50_000,
     batch_size=24,
     num_workers=6,
     seed=42,
@@ -479,22 +479,13 @@ def train(cfg: DinoWMConfig = CFG) -> None:
             )
 
     for step in range(1, cfg.steps + 1):
-        if is_main:
-            logging.info(f"[step {step}/{cfg.steps}] fetching batch ...")
         t0 = time.perf_counter()
         batch = next(dl_iter)
-        t_data = time.perf_counter() - t0
-        if is_main:
-            logging.info(
-                f"[step {step}/{cfg.steps}] batch fetched in {t_data:.3f}s — normalizing + moving to device"
-            )
         # Normalize (ImageNet for visual; MEAN_STD for state/action)
         batch = normalize(batch, dataset.stats, policy_features, DINO_WM_NORM_MAP)
         batch = to_device(batch, device)
         dataloading_s = time.perf_counter() - t0
 
-        if is_main:
-            logging.info(f"[step {step}/{cfg.steps}] forward pass ...")
         t1 = time.perf_counter()
         model.train()
 
@@ -504,24 +495,12 @@ def train(cfg: DinoWMConfig = CFG) -> None:
             _z_pred, _vis_pred, _vis_recon, loss, loss_components = (
                 accelerator.unwrap_model(model)(obs, act)
             )
-        t_fwd = time.perf_counter() - t1
-        if is_main:
-            logging.info(
-                f"[step {step}/{cfg.steps}] forward done in {t_fwd:.3f}s "
-                f"— loss={loss.item():.4f}; backward ..."
-            )
 
         # Zero all optimizer gradients
         for opt in optimizers:
             opt.zero_grad()
 
-        t_bwd = time.perf_counter()
         accelerator.backward(loss)
-        t_bwd = time.perf_counter() - t_bwd
-        if is_main:
-            logging.info(
-                f"[step {step}/{cfg.steps}] backward done in {t_bwd:.3f}s — optimizer step ..."
-            )
 
         # Clip & step each optimizer
         total_norm = 0.0
@@ -548,18 +527,12 @@ def train(cfg: DinoWMConfig = CFG) -> None:
                     gathered_components[k] = v
 
         is_save_step = step % cfg.save_freq == 0 or step == cfg.steps
+        is_log_step = step % cfg.log_freq == 0 or step == cfg.steps
 
         if is_main:
             samples = step * effective_batch_size
             episodes = samples / avg_samples_per_ep
             epochs = samples / dataset.num_frames
-            logging.info(
-                f"[step {step}/{cfg.steps}] DONE — "
-                f"step:{format_big_number(step)} smpl:{format_big_number(samples)} "
-                f"ep:{format_big_number(episodes)} epch:{epochs:.2f} "
-                f"loss={loss.item():.4f} grdn={total_norm:.3f} "
-                f"data_s={dataloading_s:.3f} updt_s={update_s:.3f}"
-            )
             if wandb_logger:
                 log_dict = {
                     "steps": step,
@@ -573,6 +546,12 @@ def train(cfg: DinoWMConfig = CFG) -> None:
                     **gathered_components,
                 }
                 wandb_logger.log_dict(log_dict, step)
+            if is_log_step:
+                logging.info(
+                    f"[step {step}/{cfg.steps}] done — "
+                    f"loss={loss.item():.4f} grdn={total_norm:.3f} "
+                    f"data_s={dataloading_s:.3f} updt_s={update_s:.3f}"
+                )
 
         if cfg.save_checkpoint and is_save_step and is_main:
             logging.info(f"Saving checkpoint at step {step}")
