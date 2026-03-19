@@ -1,5 +1,5 @@
 from .config import PI0Config
-from .model import PI0Policy
+from .policy import PI0Policy
 from .processor import postprocess_pi0, preprocess_pi0
 
 __all__ = [

@@ -14,7 +14,7 @@ from data.utils import (
     dataset_to_policy_features,
 )
 from pi0.config import PI0Config
-from pi0.model import PI0Policy
+from pi0.policy import PI0Policy
 from pi0.processor import preprocess_pi0
 from pi0.pretrained import PreTrainedPolicy
 from transformers import AutoTokenizer
