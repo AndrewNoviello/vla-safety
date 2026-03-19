@@ -20,8 +20,11 @@ from utils.constants import OBS_STATE
 STATS_PATH = Path("/workspace/vla-safety/stats.json")
 
 
-def load_image_as_numpy(path: str | Path, size: tuple[int, int] = (224, 224)) -> np.ndarray:
-    """Load an image from path and return (H, W, 3) uint8, resized to size."""
+def load_image_as_numpy(path: str | Path) -> np.ndarray:
+    """Load an image from path and return (H, W, 3) uint8 at native resolution.
+
+    Resizing to model resolution is handled by the preprocessor.
+    """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Image not found: {path}")
@@ -42,16 +45,6 @@ def load_image_as_numpy(path: str | Path, size: tuple[int, int] = (224, 224)) ->
 
     if img.ndim != 3 or img.shape[2] != 3:
         raise ValueError(f"Expected RGB image (H, W, 3), got shape {img.shape}")
-
-    if (img.shape[0], img.shape[1]) != size:
-        try:
-            from PIL import Image as PILImage
-            pil_img = PILImage.fromarray(img)
-            pil_img = pil_img.resize((size[1], size[0]), PILImage.BILINEAR)
-            img = np.array(pil_img)
-        except ImportError:
-            import cv2
-            img = cv2.resize(img, (size[1], size[0]), interpolation=cv2.INTER_LINEAR)
 
     return img.astype(np.uint8)
 
@@ -99,7 +92,7 @@ def build_observation(
             observation[k] = dummy.copy()
     else:
         if len(image_paths) == 1:
-            single = load_image_as_numpy(image_paths[0], image_size)
+            single = load_image_as_numpy(image_paths[0])
             for k in image_keys:
                 observation[k] = single.copy()
         else:
@@ -109,7 +102,7 @@ def build_observation(
                     f"camera keys: {image_keys}. Pass 1 image (replicated) or {len(image_keys)} paths."
                 )
             for path, k in zip(image_paths, image_keys):
-                observation[k] = load_image_as_numpy(path, image_size)
+                observation[k] = load_image_as_numpy(path)
 
     return observation
 
@@ -245,6 +238,7 @@ def main():
             device=device,
             max_length=policy.config.tokenizer_max_length,
             add_batch_dim=True,
+            image_resolution=tuple(policy.image_resolution),
         )
 
     def postprocessor(action):

@@ -26,8 +26,11 @@ DEFAULT_PROMPT = (
     "on top of the other two dominos to form an arch"
 )
 
-def decode_image_to_numpy(data: bytes, size: tuple[int, int] = (224, 224)) -> np.ndarray:
-    """Decode image bytes (JPEG/PNG) to (H, W, 3) uint8, resized to size."""
+def decode_image_to_numpy(data: bytes) -> np.ndarray:
+    """Decode image bytes (JPEG/PNG) to (H, W, 3) uint8 at native resolution.
+
+    Resizing to model resolution is handled by the preprocessor.
+    """
     try:
         from PIL import Image
     except ImportError:
@@ -41,15 +44,6 @@ def decode_image_to_numpy(data: bytes, size: tuple[int, int] = (224, 224)) -> np
         img = np.array(Image.open(io.BytesIO(data)).convert("RGB"))
     if img.ndim != 3 or img.shape[2] != 3:
         raise ValueError(f"Expected RGB image (H, W, 3), got shape {img.shape}")
-    if (img.shape[0], img.shape[1]) != size:
-        try:
-            from PIL import Image as PILImage
-            pil_img = PILImage.fromarray(img)
-            pil_img = pil_img.resize((size[1], size[0]), PILImage.BILINEAR)
-            img = np.array(pil_img)
-        except ImportError:
-            import cv2
-            img = cv2.resize(img, (size[1], size[0]), interpolation=cv2.INTER_LINEAR)
     return img.astype(np.uint8)
 
 
@@ -57,7 +51,6 @@ def build_observation_from_arrays(
     policy,
     image_arrays: list[np.ndarray],
     proprio: list[float] | None,
-    image_size: tuple[int, int],
 ) -> dict[str, np.ndarray]:
     """Build observation dict from in-memory images (no disk)."""
     observation: dict[str, np.ndarray] = {}
@@ -131,12 +124,11 @@ preprocessor = None
 postprocessor = None
 device = None
 use_amp = False
-image_size = (224, 224)
 
 
 @app.on_event("startup")
 def startup():
-    global policy, preprocessor, postprocessor, device, use_amp, image_size
+    global policy, preprocessor, postprocessor, device, use_amp
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -151,7 +143,6 @@ def startup():
     policy.to(device)
     policy.eval()
     policy.config.device = device
-    image_size = tuple(policy.config.image_resolution)
     dataset_stats = None
     if STATS_PATH.exists():
         dataset_stats = cast_stats_to_numpy(load_json(STATS_PATH))
@@ -174,6 +165,7 @@ def startup():
             device=device,
             max_length=policy.config.tokenizer_max_length,
             add_batch_dim=True,
+            image_resolution=tuple(policy.config.image_resolution),
         )
 
     def postprocessor(action):
@@ -201,7 +193,7 @@ def _run_and_return(prompt: str | None, image_arrays: list[np.ndarray], proprio:
     if not image_arrays:
         raise HTTPException(status_code=400, detail="At least one image is required.")
     task = prompt if prompt else DEFAULT_PROMPT
-    obs = build_observation_from_arrays(policy, image_arrays, proprio, image_size)
+    obs = build_observation_from_arrays(policy, image_arrays, proprio)
     action = run_inference(
         policy, preprocessor, postprocessor, obs, task=task, device=device, use_amp=use_amp
     )
@@ -222,13 +214,13 @@ async def predict(
         raise HTTPException(status_code=503, detail="Policy not loaded.")
     try:
         data_0 = await image_0.read()
-        image_arrays = [decode_image_to_numpy(data_0, image_size)]
+        image_arrays = [decode_image_to_numpy(data_0)]
         if image_1 and image_1.filename:
             data_1 = await image_1.read()
-            image_arrays.append(decode_image_to_numpy(data_1, image_size))
+            image_arrays.append(decode_image_to_numpy(data_1))
         if image_2 and image_2.filename:
             data_2 = await image_2.read()
-            image_arrays.append(decode_image_to_numpy(data_2, image_size))
+            image_arrays.append(decode_image_to_numpy(data_2))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     prop = None
@@ -253,7 +245,7 @@ async def predict_json(body: PredictJSONRequest):
                 raw = base64.b64decode(b64)
             except Exception:
                 raise HTTPException(status_code=400, detail="Invalid base64 in images.")
-            image_arrays.append(decode_image_to_numpy(raw, image_size))
+            image_arrays.append(decode_image_to_numpy(raw))
     if not image_arrays:
         raise HTTPException(status_code=400, detail="At least one image required (use 'images' in JSON).")
     return _run_and_return(body.prompt, image_arrays, body.proprio)

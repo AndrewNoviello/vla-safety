@@ -24,8 +24,6 @@ else:
     GemmaForCausalLM = None
     PaliGemmaForConditionalGeneration = None
 
-from dataclasses import dataclass
-
 from utils.types import FeatureType, PolicyFeature
 from pi0.config import PI0Config
 from pi0.pretrained import PreTrainedPolicy, T
@@ -131,215 +129,90 @@ def pad_vector(vector, new_dim):
     return F.pad(vector, (0, new_dim - vector.shape[-1]))
 
 
-def resize_with_pad_torch(  # see openpi `resize_with_pad_torch` (exact copy)
-    images: torch.Tensor,
-    height: int,
-    width: int,
-    mode: str = "bilinear",
-) -> torch.Tensor:
-    """PyTorch version of resize_with_pad. Resizes an image to a target height and width without distortion
-    by padding with black. If the image is float32, it must be in the range [-1, 1].
-
-    Args:
-        images: Tensor of shape [*b, h, w, c] or [*b, c, h, w]
-        height: Target height
-        width: Target width
-        mode: Interpolation mode ('bilinear', 'nearest', etc.)
-
-    Returns:
-        Resized and padded tensor with same shape format as input
-    """
-    # Check if input is in channels-last format [*b, h, w, c] or channels-first [*b, c, h, w]
-    if images.shape[-1] <= 4:  # Assume channels-last format
-        channels_last = True
-        if images.dim() == 3:
-            images = images.unsqueeze(0)  # Add batch dimension
-        images = images.permute(0, 3, 1, 2)  # [b, h, w, c] -> [b, c, h, w]
-    else:
-        channels_last = False
-        if images.dim() == 3:
-            images = images.unsqueeze(0)  # Add batch dimension
-
-    batch_size, channels, cur_height, cur_width = images.shape
-
-    # Calculate resize ratio
-    ratio = max(cur_width / width, cur_height / height)
-    resized_height = int(cur_height / ratio)
-    resized_width = int(cur_width / ratio)
-
-    # Resize
-    resized_images = F.interpolate(
-        images,
-        size=(resized_height, resized_width),
-        mode=mode,
-        align_corners=False if mode == "bilinear" else None,
-    )
-
-    # Handle dtype-specific clipping
-    if images.dtype == torch.uint8:
-        resized_images = torch.round(resized_images).clamp(0, 255).to(torch.uint8)
-    elif images.dtype == torch.float32:
-        resized_images = resized_images.clamp(-1.0, 1.0)
-    else:
-        raise ValueError(f"Unsupported image dtype: {images.dtype}")
-
-    # Calculate padding
-    pad_h0, remainder_h = divmod(height - resized_height, 2)
-    pad_h1 = pad_h0 + remainder_h
-    pad_w0, remainder_w = divmod(width - resized_width, 2)
-    pad_w1 = pad_w0 + remainder_w
-
-    # Pad
-    constant_value = 0 if images.dtype == torch.uint8 else -1.0
-    padded_images = F.pad(
-        resized_images,
-        (pad_w0, pad_w1, pad_h0, pad_h1),  # left, right, top, bottom
-        mode="constant",
-        value=constant_value,
-    )
-
-    # Convert back to original format if needed
-    if channels_last:
-        padded_images = padded_images.permute(0, 2, 3, 1)  # [b, c, h, w] -> [b, h, w, c]
-
-    return padded_images
-
-
-# Define the complete layer computation function for gradient checkpointing
-def compute_layer_complete(
-    layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond, paligemma, gemma_expert
+def _compute_fused_layer(
+    layer_idx,
+    inputs_embeds,
+    attention_mask,
+    position_ids,
+    adarms_cond,
+    paligemma,
+    gemma_expert,
 ):
-    models = [paligemma.language_model, gemma_expert.model]
-    query_states = []
-    key_states = []
-    value_states = []
-    gates = []
-    for i, hidden_states in enumerate(inputs_embeds):
-        layer = models[i].layers[layer_idx]
-        hidden_states, gate = layer.input_layernorm(hidden_states, cond=adarms_cond[i])  # noqa: PLW2901
-        gates.append(gate)
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, layer.self_attn.head_dim)
-        query_state = layer.self_attn.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-        key_state = layer.self_attn.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-        value_state = layer.self_attn.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-        query_states.append(query_state)
-        key_states.append(key_state)
-        value_states.append(value_state)
-    # Concatenate and process attention
-    query_states = torch.cat(query_states, dim=2)
-    key_states = torch.cat(key_states, dim=2)
-    value_states = torch.cat(value_states, dim=2)
-    dummy_tensor = torch.zeros(
-        query_states.shape[0],
-        query_states.shape[2],
-        query_states.shape[-1],
-        device=query_states.device,
-        dtype=query_states.dtype,
+    """One transformer layer for the fused (VLM + expert) path. Used with gradient checkpointing."""
+    vlm_embeds, expert_embeds = inputs_embeds
+    vlm_layer = paligemma.language_model.layers[layer_idx]
+    expert_layer = gemma_expert.model.layers[layer_idx]
+    vlm_attn = vlm_layer.self_attn
+
+    # 1. Input layernorm + Q/K/V projection (VLM and expert)
+    vlm_hidden, vlm_gate = vlm_layer.input_layernorm(
+        vlm_embeds, cond=adarms_cond[0]
     )
-    cos, sin = paligemma.model.language_model.rotary_emb(dummy_tensor, position_ids)
-    query_states, key_states = modeling_gemma.apply_rotary_pos_emb(
-        query_states, key_states, cos, sin, unsqueeze_dim=1
+    expert_hidden, expert_gate = expert_layer.input_layernorm(
+        expert_embeds, cond=adarms_cond[1]
     )
-    batch_size = query_states.shape[0]
-    scaling = paligemma.language_model.layers[layer_idx].self_attn.scaling
-    # Attention computation
-    att_output, _ = modeling_gemma.eager_attention_forward(
-        paligemma.language_model.layers[layer_idx].self_attn,
-        query_states,
-        key_states,
-        value_states,
-        attention_mask,
-        scaling,
+
+    vlm_shape = (*vlm_hidden.shape[:-1], -1, vlm_layer.self_attn.head_dim)
+    vlm_q = vlm_layer.self_attn.q_proj(vlm_hidden).view(vlm_shape).transpose(1, 2)
+    vlm_k = vlm_layer.self_attn.k_proj(vlm_hidden).view(vlm_shape).transpose(1, 2)
+    vlm_v = vlm_layer.self_attn.v_proj(vlm_hidden).view(vlm_shape).transpose(1, 2)
+
+    expert_shape = (*expert_hidden.shape[:-1], -1, expert_layer.self_attn.head_dim)
+    expert_q = expert_layer.self_attn.q_proj(expert_hidden).view(expert_shape).transpose(1, 2)
+    expert_k = expert_layer.self_attn.k_proj(expert_hidden).view(expert_shape).transpose(1, 2)
+    expert_v = expert_layer.self_attn.v_proj(expert_hidden).view(expert_shape).transpose(1, 2)
+
+    # 2. Concatenate streams, apply rotary embeddings, run attention
+    queries = torch.cat([vlm_q, expert_q], dim=2)
+    keys = torch.cat([vlm_k, expert_k], dim=2)
+    values = torch.cat([vlm_v, expert_v], dim=2)
+
+    rotary_dummy = torch.zeros(
+        queries.shape[0], queries.shape[2], queries.shape[-1],
+        device=queries.device, dtype=queries.dtype,
     )
-    # Get head_dim from the current layer, not from the model
-    head_dim = paligemma.language_model.layers[layer_idx].self_attn.head_dim
-    att_output = att_output.reshape(batch_size, -1, 1 * 8 * head_dim)
-    # Process layer outputs
-    outputs_embeds = []
-    start_pos = 0
-    for i, hidden_states in enumerate(inputs_embeds):
-        layer = models[i].layers[layer_idx]
-        end_pos = start_pos + hidden_states.shape[1]
-        if att_output.dtype != layer.self_attn.o_proj.weight.dtype:
-            att_output = att_output.to(layer.self_attn.o_proj.weight.dtype)
-        out_emb = layer.self_attn.o_proj(att_output[:, start_pos:end_pos])
-        # first residual
-        out_emb = modeling_gemma._gated_residual(hidden_states, out_emb, gates[i])  # noqa: SLF001
-        after_first_residual = out_emb.clone()
-        out_emb, gate = layer.post_attention_layernorm(out_emb, cond=adarms_cond[i])
-        # Convert to bfloat16 if the next layer (mlp) uses bfloat16
+    cos, sin = paligemma.model.language_model.rotary_emb(rotary_dummy, position_ids)
+    queries, keys = modeling_gemma.apply_rotary_pos_emb(
+        queries, keys, cos, sin, unsqueeze_dim=1
+    )
+
+    batch_size = queries.shape[0]
+    attn_out, _ = modeling_gemma.eager_attention_forward(
+        vlm_attn, queries, keys, values, attention_mask, vlm_attn.scaling
+    )
+    attn_out = attn_out.reshape(
+        batch_size, -1, vlm_attn.num_heads * vlm_attn.head_dim
+    )
+
+    # 3. Output projection + MLP for each stream (with gated residuals)
+    vlm_seq_len = vlm_embeds.shape[1]
+    expert_seq_len = expert_embeds.shape[1]
+
+    def _output_proj_and_mlp(layer, attn_slice, residual_input, input_gate, cond):
+        if attn_slice.dtype != layer.self_attn.o_proj.weight.dtype:
+            attn_slice = attn_slice.to(layer.self_attn.o_proj.weight.dtype)
+        attn_proj = layer.self_attn.o_proj(attn_slice)
+        out = modeling_gemma._gated_residual(  # noqa: SLF001
+            residual_input, attn_proj, input_gate
+        )
+        pre_mlp = out.clone()
+        out, mlp_gate = layer.post_attention_layernorm(out, cond=cond)
         if layer.mlp.up_proj.weight.dtype == torch.bfloat16:
-            out_emb = out_emb.to(dtype=torch.bfloat16)
-        out_emb = layer.mlp(out_emb)
-        # second residual
-        out_emb = modeling_gemma._gated_residual(after_first_residual, out_emb, gate)  # noqa: SLF001
-        outputs_embeds.append(out_emb)
-        start_pos = end_pos
-    return outputs_embeds
+            out = out.to(dtype=torch.bfloat16)
+        out = layer.mlp(out)
+        return modeling_gemma._gated_residual(pre_mlp, out, mlp_gate)  # noqa: SLF001
 
+    vlm_attn_slice = attn_out[:, :vlm_seq_len]
+    expert_attn_slice = attn_out[:, vlm_seq_len : vlm_seq_len + expert_seq_len]
 
-class GemmaConfig:  # see openpi `gemma.py: Config`
-    """Configuration for Gemma model variants."""
+    vlm_out = _output_proj_and_mlp(
+        vlm_layer, vlm_attn_slice, vlm_embeds, vlm_gate, adarms_cond[0]
+    )
+    expert_out = _output_proj_and_mlp(
+        expert_layer, expert_attn_slice, expert_embeds, expert_gate, adarms_cond[1]
+    )
 
-    def __init__(self, width, depth, mlp_dim, num_heads, num_kv_heads, head_dim):
-        self.width = width
-        self.depth = depth
-        self.mlp_dim = mlp_dim
-        self.num_heads = num_heads
-        self.num_kv_heads = num_kv_heads
-        self.head_dim = head_dim
-
-
-@dataclass
-class PI0ArchParams:
-    """Architecture and flow-matching params for PI0Pytorch (no config object)."""
-
-    paligemma_variant: str = "gemma_2b"
-    action_expert_variant: str = "gemma_300m"
-    dtype: str = "float32"
-    chunk_size: int = 50
-    n_action_steps: int = 50
-    max_state_dim: int = 32
-    max_action_dim: int = 32
-    image_resolution: tuple[int, int] = (224, 224)
-    num_inference_steps: int = 10
-    time_sampling_beta_alpha: float = 1.5
-    time_sampling_beta_beta: float = 1.0
-    time_sampling_scale: float = 0.999
-    time_sampling_offset: float = 0.001
-    min_period: float = 4e-3
-    max_period: float = 4.0
-    gradient_checkpointing: bool = False
-    compile_model: bool = False
-    compile_mode: str = "max-autotune"
-    freeze_vision_encoder: bool = False
-    train_expert_only: bool = False
-    rtc_config: None = None  # RTC disabled by default
-
-
-def get_gemma_config(variant: str) -> GemmaConfig:  # see openpi `gemma.py: get_config`
-    """Returns config for specified gemma variant."""
-    if variant == "gemma_300m":
-        return GemmaConfig(
-            width=1024,
-            depth=18,
-            mlp_dim=4096,
-            num_heads=8,
-            num_kv_heads=1,
-            head_dim=256,
-        )
-    elif variant == "gemma_2b":
-        return GemmaConfig(
-            width=2048,
-            depth=18,
-            mlp_dim=16_384,
-            num_heads=8,
-            num_kv_heads=1,
-            head_dim=256,
-        )
-    else:
-        raise ValueError(f"Unknown variant: {variant}")
+    return [vlm_out, expert_out]
 
 
 class PaliGemmaWithExpertModel(
@@ -349,8 +222,7 @@ class PaliGemmaWithExpertModel(
 
     def __init__(
         self,
-        vlm_config,
-        action_expert_config,
+        config: PI0Config,
         use_adarms=None,
         precision: Literal["bfloat16", "float32"] = "bfloat16",
         image_size: int = 224,
@@ -366,17 +238,17 @@ class PaliGemmaWithExpertModel(
         vlm_config_hf = CONFIG_MAPPING["paligemma"]()
         vlm_config_hf._vocab_size = 257152  # noqa: SLF001
         vlm_config_hf.image_token_index = 257152
-        vlm_config_hf.text_config.hidden_size = vlm_config.width
-        vlm_config_hf.text_config.intermediate_size = vlm_config.mlp_dim
-        vlm_config_hf.text_config.num_attention_heads = vlm_config.num_heads
-        vlm_config_hf.text_config.head_dim = vlm_config.head_dim
-        vlm_config_hf.text_config.num_hidden_layers = vlm_config.depth
-        vlm_config_hf.text_config.num_key_value_heads = vlm_config.num_kv_heads
+        vlm_config_hf.text_config.hidden_size = config.paligemma_width
+        vlm_config_hf.text_config.intermediate_size = config.paligemma_mlp_dim
+        vlm_config_hf.text_config.num_attention_heads = config.paligemma_num_heads
+        vlm_config_hf.text_config.head_dim = config.paligemma_head_dim
+        vlm_config_hf.text_config.num_hidden_layers = config.paligemma_depth
+        vlm_config_hf.text_config.num_key_value_heads = config.paligemma_num_kv_heads
         vlm_config_hf.text_config.hidden_activation = "gelu_pytorch_tanh"
         vlm_config_hf.text_config.torch_dtype = "float32"
         vlm_config_hf.text_config.vocab_size = 257152
         vlm_config_hf.text_config.use_adarms = use_adarms[0]
-        vlm_config_hf.text_config.adarms_cond_dim = vlm_config.width if use_adarms[0] else None
+        vlm_config_hf.text_config.adarms_cond_dim = config.paligemma_width if use_adarms[0] else None
         vlm_config_hf.vision_config.image_size = image_size
         vlm_config_hf.vision_config.intermediate_size = 4304
         vlm_config_hf.vision_config.projection_dim = 2048
@@ -384,17 +256,17 @@ class PaliGemmaWithExpertModel(
         vlm_config_hf.vision_config.torch_dtype = "float32"
 
         action_expert_config_hf = CONFIG_MAPPING["gemma"](
-            head_dim=action_expert_config.head_dim,
-            hidden_size=action_expert_config.width,
-            intermediate_size=action_expert_config.mlp_dim,
-            num_attention_heads=action_expert_config.num_heads,
-            num_hidden_layers=action_expert_config.depth,
-            num_key_value_heads=action_expert_config.num_kv_heads,
+            head_dim=config.action_expert_head_dim,
+            hidden_size=config.action_expert_width,
+            intermediate_size=config.action_expert_mlp_dim,
+            num_attention_heads=config.action_expert_num_heads,
+            num_hidden_layers=config.action_expert_depth,
+            num_key_value_heads=config.action_expert_num_kv_heads,
             vocab_size=257152,
             hidden_activation="gelu_pytorch_tanh",
             torch_dtype="float32",
             use_adarms=use_adarms[1],
-            adarms_cond_dim=action_expert_config.width if use_adarms[1] else None,
+            adarms_cond_dim=config.action_expert_width if use_adarms[1] else None,
         )
 
         self.paligemma = PaliGemmaForConditionalGeneration(config=vlm_config_hf)
@@ -499,7 +371,7 @@ class PaliGemmaWithExpertModel(
             for layer_idx in range(num_layers):
                 if use_gradient_checkpointing:
                     inputs_embeds = torch.utils.checkpoint.checkpoint(
-                        compute_layer_complete,
+                        _compute_fused_layer,
                         layer_idx,
                         inputs_embeds,
                         attention_mask,
@@ -511,7 +383,7 @@ class PaliGemmaWithExpertModel(
                         gemma_expert=self.gemma_expert,
                     )
                 else:
-                    inputs_embeds = compute_layer_complete(
+                    inputs_embeds = _compute_fused_layer(
                         layer_idx,
                         inputs_embeds,
                         attention_mask,
@@ -551,45 +423,41 @@ class PaliGemmaWithExpertModel(
 class PI0Pytorch(nn.Module):  # see openpi `PI0Pytorch`
     """Core PI0 PyTorch model."""
 
-    def __init__(self, params: PI0ArchParams, rtc_processor: RTCProcessor | None = None):
+    def __init__(self, config: PI0Config, rtc_processor: RTCProcessor | None = None):
         super().__init__()
-        self.params = params
+        self.config = config
         self.rtc_processor = rtc_processor
 
-        paligemma_config = get_gemma_config(params.paligemma_variant)
-        action_expert_config = get_gemma_config(params.action_expert_variant)
-
-        if params.image_resolution[0] != params.image_resolution[1]:
+        if config.image_resolution[0] != config.image_resolution[1]:
             raise ValueError(
-                f"PaliGemma expects square image resolution, invalid resolution: {params.image_resolution}"
+                f"PaliGemma expects square image resolution, invalid resolution: {config.image_resolution}"
             )
 
         self.paligemma_with_expert = PaliGemmaWithExpertModel(
-            paligemma_config,
-            action_expert_config,
+            config,
             use_adarms=[False, False],
-            precision=params.dtype,
-            image_size=params.image_resolution[0],
-            freeze_vision_encoder=params.freeze_vision_encoder,
-            train_expert_only=params.train_expert_only,
+            precision=config.dtype,
+            image_size=config.image_resolution[0],
+            freeze_vision_encoder=config.freeze_vision_encoder,
+            train_expert_only=config.train_expert_only,
         )
 
-        self.action_in_proj = nn.Linear(params.max_action_dim, action_expert_config.width)
-        self.action_out_proj = nn.Linear(action_expert_config.width, params.max_action_dim)
+        self.action_in_proj = nn.Linear(config.max_action_dim, config.action_expert_width)
+        self.action_out_proj = nn.Linear(config.action_expert_width, config.max_action_dim)
 
-        self.state_proj = nn.Linear(params.max_state_dim, action_expert_config.width)
-        self.action_time_mlp_in = nn.Linear(2 * action_expert_config.width, action_expert_config.width)
-        self.action_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
+        self.state_proj = nn.Linear(config.max_state_dim, config.action_expert_width)
+        self.action_time_mlp_in = nn.Linear(2 * config.action_expert_width, config.action_expert_width)
+        self.action_time_mlp_out = nn.Linear(config.action_expert_width, config.action_expert_width)
 
         # Initialize gradient checkpointing flag
         self.gradient_checkpointing_enabled = False
 
         # Compile model if requested
-        if params.compile_model:
+        if config.compile_model:
             torch.set_float32_matmul_precision("high")
-            self.sample_actions = torch.compile(self.sample_actions, mode=params.compile_mode)
+            self.sample_actions = torch.compile(self.sample_actions, mode=config.compile_mode)
             # Also compile the main forward pass used during training
-            self.forward = torch.compile(self.forward, mode=params.compile_mode)
+            self.forward = torch.compile(self.forward, mode=config.compile_mode)
 
         msg = """An incorrect transformer version is used, please create an issue on https://github.com/huggingface/lerobot/issues"""
 
@@ -618,7 +486,7 @@ class PI0Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         logging.info("Disabled gradient checkpointing for PI0Pytorch model")
 
     def _rtc_enabled(self):
-        return self.params.rtc_config is not None and self.params.rtc_config.enabled
+        return self.config.rtc_config is not None and self.config.rtc_config.enabled
 
     def _apply_checkpoint(self, func, *args, **kwargs):
         """Helper method to apply gradient checkpointing if enabled."""
@@ -644,9 +512,9 @@ class PI0Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
     def sample_time(self, bsize, device):
         time_beta = sample_beta(
-            self.params.time_sampling_beta_alpha, self.params.time_sampling_beta_beta, bsize, device
+            self.config.time_sampling_beta_alpha, self.config.time_sampling_beta_beta, bsize, device
         )
-        time = time_beta * self.params.time_sampling_scale + self.params.time_sampling_offset
+        time = time_beta * self.config.time_sampling_scale + self.config.time_sampling_offset
         return time.to(dtype=torch.float32, device=device)
 
     def embed_prefix(
@@ -717,8 +585,8 @@ class PI0Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         time_emb = create_sinusoidal_pos_embedding(
             timestep,
             self.action_in_proj.out_features,
-            min_period=self.params.min_period,
-            max_period=self.params.max_period,
+            min_period=self.config.min_period,
+            max_period=self.config.max_period,
             device=timestep.device,
         )
         time_emb = time_emb.type(dtype=timestep.dtype)
@@ -746,7 +614,7 @@ class PI0Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         pad_masks.append(action_time_mask)
 
         # Set attention masks so that image, language and state inputs do not attend to action tokens
-        att_masks += [1] + ([0] * (self.params.chunk_size - 1))
+        att_masks += [1] + ([0] * (self.config.chunk_size - 1))
 
         embs = torch.cat(embs, dim=1)
         pad_masks = torch.cat(pad_masks, dim=1)
@@ -804,7 +672,7 @@ class PI0Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             forward_func, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
         )
 
-        suffix_out = suffix_out[:, -self.params.chunk_size :]
+        suffix_out = suffix_out[:, -self.config.chunk_size :]
         suffix_out = suffix_out.to(dtype=torch.float32)
 
         def action_out_proj_func(suffix_out):
@@ -828,7 +696,7 @@ class PI0Pytorch(nn.Module):  # see openpi `PI0Pytorch`
     ) -> Tensor:
         """Do a full inference forward and compute the action."""
         if num_steps is None:
-            num_steps = self.params.num_inference_steps
+            num_steps = self.config.num_inference_steps
 
         bsize = state.shape[0]
         device = state.device
@@ -837,8 +705,8 @@ class PI0Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             # Sample noise with padded dimension as expected by action_in_proj
             actions_shape = (
                 bsize,
-                self.params.chunk_size,
-                self.params.max_action_dim,
+                self.config.chunk_size,
+                self.config.max_action_dim,
             )  # Use params max_action_dim for internal processing
             noise = self.sample_noise(actions_shape, device)
 
@@ -933,7 +801,7 @@ class PI0Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         )
 
         suffix_out = outputs_embeds[1]
-        suffix_out = suffix_out[:, -self.params.chunk_size :]
+        suffix_out = suffix_out[:, -self.config.chunk_size :]
         suffix_out = suffix_out.to(dtype=torch.float32)
         return self.action_out_proj(suffix_out)
 
@@ -960,33 +828,8 @@ class PI0Policy(PreTrainedPolicy):
             )
             config.use_amp = False
 
-        # Build arch params for PI0Pytorch
-        params = PI0ArchParams(
-            paligemma_variant=config.paligemma_variant,
-            action_expert_variant=config.action_expert_variant,
-            dtype=config.dtype,
-            chunk_size=config.chunk_size,
-            n_action_steps=config.n_action_steps,
-            max_state_dim=config.max_state_dim,
-            max_action_dim=config.max_action_dim,
-            image_resolution=config.image_resolution,
-            num_inference_steps=config.num_inference_steps,
-            time_sampling_beta_alpha=config.time_sampling_beta_alpha,
-            time_sampling_beta_beta=config.time_sampling_beta_beta,
-            time_sampling_scale=config.time_sampling_scale,
-            time_sampling_offset=config.time_sampling_offset,
-            min_period=config.min_period,
-            max_period=config.max_period,
-            gradient_checkpointing=config.gradient_checkpointing,
-            compile_model=config.compile_model,
-            compile_mode=config.compile_mode,
-            freeze_vision_encoder=config.freeze_vision_encoder,
-            train_expert_only=config.train_expert_only,
-            rtc_config=config.rtc_config,
-        )
-
         self.init_rtc_processor()
-        self.model = PI0Pytorch(params, rtc_processor=self.rtc_processor)
+        self.model = PI0Pytorch(config, rtc_processor=self.rtc_processor)
 
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
@@ -1264,9 +1107,7 @@ class PI0Policy(PreTrainedPolicy):
                 # Convert [B, C, H, W] to [B, H, W, C] for processing
                 img = img.permute(0, 2, 3, 1)
 
-            # from openpi preprocess_observation_pytorch: Resize with padding if needed
-            if img.shape[1:3] != self.image_resolution:
-                img = resize_with_pad_torch(img, *self.image_resolution)
+            # Resize is done in preprocessor; images are expected at image_resolution here
 
             # Normalize from [0,1] to [-1,1] as expected by siglip
             img = img * 2.0 - 1.0

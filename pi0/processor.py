@@ -11,6 +11,7 @@ from utils.constants import ACTION
 from utils.processor_utils import (
     add_batch_dim,
     normalize,
+    resize_images_in_batch,
     to_device,
     tokenize_batch,
     unnormalize,
@@ -40,6 +41,7 @@ def preprocess_pi0(
     *,
     max_length: int = 48,
     add_batch_dim: bool = False,
+    image_resolution: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     """Preprocess a batch for PI0 (training or inference)."""
     stats = stats or {}
@@ -54,6 +56,8 @@ def preprocess_pi0(
         padding="max_length",
     )
     batch = to_device(batch, device)
+    if image_resolution is not None:
+        batch = resize_images_in_batch(batch, image_resolution, all_features)
     batch = normalize(batch, stats, all_features, norm_map)
     return batch
 

@@ -198,6 +198,7 @@ def train():
             device=device,
             max_length=48,
             add_batch_dim=False,
+            image_resolution=tuple(policy.config.image_resolution),
         )
 
         metrics = update_policy(

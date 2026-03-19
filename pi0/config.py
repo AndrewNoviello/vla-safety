@@ -30,9 +30,23 @@ class PI0Config:
     tags: list[str] | None = None
     license: str | None = None
 
-    paligemma_variant: str = "gemma_2b"
-    action_expert_variant: str = "gemma_300m"
     dtype: str = "float32"
+
+    # PaliGemma VLM backbone (gemma_2b)
+    paligemma_width: int = 2048
+    paligemma_depth: int = 18
+    paligemma_mlp_dim: int = 16_384
+    paligemma_num_heads: int = 8
+    paligemma_num_kv_heads: int = 1
+    paligemma_head_dim: int = 256
+
+    # Action expert (gemma_300m)
+    action_expert_width: int = 1024
+    action_expert_depth: int = 18
+    action_expert_mlp_dim: int = 4096
+    action_expert_num_heads: int = 8
+    action_expert_num_kv_heads: int = 1
+    action_expert_head_dim: int = 256
 
     chunk_size: int = 50
     n_action_steps: int = 50

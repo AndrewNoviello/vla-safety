@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 import torch
 from torch import Tensor
+from torch.nn import functional as F
 
 from utils.types import FeatureType, NormalizationMode, PolicyFeature
 from utils.constants import (
@@ -18,6 +19,104 @@ from utils.constants import (
     OBS_LANGUAGE_TOKENS,
     OBS_STATE,
 )
+
+
+def resize_with_pad_torch(
+    images: torch.Tensor,
+    height: int,
+    width: int,
+    mode: str = "bilinear",
+    pad_value: float | None = None,
+) -> torch.Tensor:
+    """Resize image to target size without distortion by padding.
+
+    Args:
+        images: Tensor of shape [*b, h, w, c] or [*b, c, h, w]
+        height: Target height
+        width: Target width
+        mode: Interpolation mode ('bilinear', 'nearest', etc.)
+        pad_value: Value for padded regions. If None, uses 0 for uint8, -1.0 for float32.
+            For [0,1] float images, use 0 so that after *2-1 scaling padded regions become -1.
+
+    Returns:
+        Resized and padded tensor with same shape format as input
+    """
+    if images.shape[-1] <= 4:
+        channels_last = True
+        if images.dim() == 3:
+            images = images.unsqueeze(0)
+        images = images.permute(0, 3, 1, 2)
+    else:
+        channels_last = False
+        if images.dim() == 3:
+            images = images.unsqueeze(0)
+
+    _, _, cur_height, cur_width = images.shape
+    ratio = max(cur_width / width, cur_height / height)
+    resized_height = int(cur_height / ratio)
+    resized_width = int(cur_width / ratio)
+
+    resized_images = F.interpolate(
+        images,
+        size=(resized_height, resized_width),
+        mode=mode,
+        align_corners=False if mode == "bilinear" else None,
+    )
+
+    if images.dtype == torch.uint8:
+        resized_images = torch.round(resized_images).clamp(0, 255).to(torch.uint8)
+    elif images.dtype == torch.float32:
+        resized_images = resized_images.clamp(-1.0, 1.0)
+    else:
+        raise ValueError(f"Unsupported image dtype: {images.dtype}")
+
+    pad_h0, remainder_h = divmod(height - resized_height, 2)
+    pad_h1 = pad_h0 + remainder_h
+    pad_w0, remainder_w = divmod(width - resized_width, 2)
+    pad_w1 = pad_w0 + remainder_w
+
+    if pad_value is not None:
+        constant_value = pad_value
+    else:
+        constant_value = 0 if images.dtype == torch.uint8 else -1.0
+
+    padded_images = F.pad(
+        resized_images,
+        (pad_w0, pad_w1, pad_h0, pad_h1),
+        mode="constant",
+        value=constant_value,
+    )
+
+    if channels_last:
+        padded_images = padded_images.permute(0, 2, 3, 1)
+
+    return padded_images
+
+
+def resize_images_in_batch(
+    batch: dict[str, Any],
+    image_resolution: tuple[int, int],
+    all_features: dict[str, Any],
+) -> dict[str, Any]:
+    """Resize visual features in batch to image_resolution (aspect-ratio preserving with pad)."""
+    height, width = image_resolution
+    result = dict(batch)
+    for key, feat in all_features.items():
+        if key not in result or getattr(feat, "type", None) != FeatureType.VISUAL:
+            continue
+        tensor = result[key]
+        if not isinstance(tensor, Tensor) or tensor.ndim < 3:
+            continue
+        # Check spatial dims: [B, C, H, W] or [B, H, W, C]
+        if tensor.shape[1] == 3:
+            h, w = tensor.shape[2], tensor.shape[3]
+        else:
+            h, w = tensor.shape[1], tensor.shape[2]
+        if (h, w) != (height, width):
+            result[key] = resize_with_pad_torch(
+                tensor, height, width, pad_value=0.0
+            )
+    return result
 
 
 def prepare_observation_for_inference(
