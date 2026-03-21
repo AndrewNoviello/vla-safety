@@ -197,6 +197,8 @@ def _build_model(
         train_encoder=cfg.train_encoder,
         train_predictor=cfg.train_predictor,
         train_decoder=cfg.train_decoder,
+        use_failure_head=cfg.use_failure_head,
+        failure_head_hidden_dim=cfg.failure_head_hidden_dim,
     )
 
     sub = {

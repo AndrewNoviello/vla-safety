@@ -65,5 +65,9 @@ class DinoWMConfig:
     wandb_entity: Optional[str] = None
     wandb_notes: Optional[str] = None
 
+    # Failure head — predicts a safety score from mean-pooled predictor latents
+    use_failure_head: bool = False
+    failure_head_hidden_dim: int = 256
+
     # HuggingFace Hub — upload checkpoints here after training (set to None to skip)
     hf_model_repo_id: Optional[str] = None

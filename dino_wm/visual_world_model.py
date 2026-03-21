@@ -21,6 +21,8 @@ class VWorldModel(nn.Module):
         train_encoder=True,
         train_predictor=False,
         train_decoder=True,
+        use_failure_head=False,
+        failure_head_hidden_dim=256,
     ):
         super().__init__()
         self.num_hist = num_hist
@@ -36,6 +38,17 @@ class VWorldModel(nn.Module):
         self.proprio_dim = proprio_dim * num_proprio_repeat
         self.action_dim = action_dim * num_action_repeat
         self.emb_dim = self.encoder.emb_dim + (self.action_dim + self.proprio_dim) * concat_dim
+
+        # Failure head: mean-pool predictor output patches → scalar safety score
+        # Input dim equals the predictor output dim (emb_dim when concat_dim=1)
+        self.use_failure_head = use_failure_head
+        if use_failure_head:
+            self.failure_head = nn.Sequential(
+                nn.LayerNorm(self.emb_dim),
+                nn.Linear(self.emb_dim, failure_head_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(failure_head_hidden_dim, 1),
+            )
 
         print(f"num_action_repeat: {self.num_action_repeat}")
         print(f"num_proprio_repeat: {self.num_proprio_repeat}")
@@ -100,6 +113,20 @@ class VWorldModel(nn.Module):
 
         proprio = obs["proprio"]  # raw, transition will embed
         return {"visual": visual_embs, "proprio": proprio, "class_token": class_token}
+
+    def predict_failure(self, z):
+        """Predict a per-timestep safety score from predictor latents.
+
+        Mirrors the reference failure_head: mean-pool across patches, then MLP → scalar.
+
+        Args:
+            z: (B, T, num_patches, predictor_dim)  — output of predict() or encode()
+        Returns:
+            scores: (B, T, 1)  — positive = safe, negative = unsafe (before tanh scaling)
+        """
+        assert self.use_failure_head, "failure_head not enabled (use_failure_head=False)"
+        pooled = z.mean(dim=2)          # (B, T, predictor_dim)
+        return self.failure_head(pooled)  # (B, T, 1)
 
     def predict(self, z):
         """
