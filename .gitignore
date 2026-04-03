@@ -1,3 +1,4 @@
 .cache
 *.mp4
 outputs/
+*__pycache__*
