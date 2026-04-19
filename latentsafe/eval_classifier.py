@@ -250,7 +250,7 @@ def evaluate(
 def _parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint",       required=True)
-    p.add_argument("--dataset_repo_id",  default="AndrewNoviello/domino-world-v2")
+    p.add_argument("--dataset_repo_id",  default="various-and-sundry/domino-world-v3-labeled")
     p.add_argument("--num_samples",      type=int, default=2000)
     p.add_argument("--batch_size",       type=int, default=64)
     p.add_argument("--device",           default="cuda")

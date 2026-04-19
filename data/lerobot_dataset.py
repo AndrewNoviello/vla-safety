@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from threading import Lock
@@ -30,6 +31,10 @@ class _VideoDecoderCache:
 
 
 _decoder_cache = _VideoDecoderCache()
+
+# Track which episodes have already logged a decode error (per worker process).
+# Keeps warnings to one per episode instead of one per failing frame.
+_decode_error_episodes: set[int] = set()
 
 
 class LeRobotDataset(torch.utils.data.Dataset):
@@ -107,8 +112,22 @@ class LeRobotDataset(torch.utils.data.Dataset):
     def _load_video_frames(self, ep_idx: int, frame_indices: list[int]) -> torch.Tensor:
         path = self._video_dir / f"episode_{ep_idx:03d}.mp4"
         decoder = _decoder_cache.get(str(path))
-        batch = decoder.get_frames_at(indices=frame_indices)
-        return (batch.data / 255.0).float()
+        try:
+            batch = decoder.get_frames_at(indices=frame_indices)
+            return (batch.data / 255.0).float()
+        except RuntimeError as exc:
+            try:
+                h = decoder.metadata.height or 480
+                w = decoder.metadata.width or 640
+            except Exception:
+                h, w = 480, 640
+            if ep_idx not in _decode_error_episodes:
+                _decode_error_episodes.add(ep_idx)
+                logging.warning(
+                    f"torchcodec decode error in episode_{ep_idx:03d}.mp4 — "
+                    f"returning black frames for all affected samples. ({exc})"
+                )
+            return torch.zeros(len(frame_indices), 3, h, w, dtype=torch.float32)
 
     def _load_hf_dataset(self) -> datasets.Dataset:
         hf_dataset = load_episode_parquets(self.root / "data", features=PARQUET_FEATURES)
@@ -153,6 +172,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         item["image"] = self._load_video_frames(ep_idx, [frame_idx]).squeeze(0)
 
+        query_indices: dict = {}
         if self.delta_indices is not None:
             query_indices, padding = self._get_query_indices(abs_idx, ep_idx)
             query_result = self._query_hf_dataset(query_indices, ep_idx)
@@ -163,6 +183,19 @@ class LeRobotDataset(torch.utils.data.Dataset):
         if self.image_transforms is not None:
             for cam in self._keys_by_dtype("image"):
                 item[cam] = self.image_transforms(item[cam])
+
+        # Derive integer failure_label from the string `safety` column when present.
+        # "safe" -> 0, anything else (e.g. "unsafe") -> 1.
+        if "safety" in self.hf_dataset.column_names:
+            if "observation.state" in query_indices:
+                win_idxs = query_indices["observation.state"]
+            else:
+                win_idxs = [abs_idx]
+            safety_strs = [str(self.hf_dataset[int(i)]["safety"]) for i in win_idxs]
+            item["failure_label"] = torch.tensor(
+                [0 if s == "safe" else 1 for s in safety_strs],
+                dtype=torch.long,
+            )
 
         item["task"] = self.prompt
 

@@ -213,7 +213,7 @@ def _parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--wm_checkpoint",    required=True)
     p.add_argument("--actor_checkpoint", required=True)
-    p.add_argument("--dataset_repo_id",  default="AndrewNoviello/domino-world-v2")
+    p.add_argument("--dataset_repo_id",  default="various-and-sundry/domino-world-v3-labeled")
     p.add_argument("--num_episodes",     type=int, default=100)
     p.add_argument("--device",           default="cuda")
     return p.parse_args()

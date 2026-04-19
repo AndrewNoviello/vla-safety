@@ -1,3 +1,7 @@
 .cache
 *.mp4
 outputs/
+vla_safety.egg-info/
+success-1/
+success-2/
+build/

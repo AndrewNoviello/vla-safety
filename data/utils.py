@@ -22,6 +22,7 @@ PARQUET_FEATURES = datasets.Features({
     "episode_index": datasets.Value("int64"),
     "index": datasets.Value("int64"),
     "task_index": datasets.Value("int64"),
+    "safety": datasets.Value("string"),
 })
 
 POLICY_FEATURES = {

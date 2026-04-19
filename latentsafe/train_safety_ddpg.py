@@ -175,6 +175,7 @@ def train(
     wm_checkpoint: str,
     dataset_repo_id: str,
     output_dir: str = "outputs/safety_ddpg",
+    classifier_checkpoint: str | None = None,
     # World model config (must match checkpoint)
     num_hist: int = 2,
     num_pred: int = 1,
@@ -260,6 +261,12 @@ def train(
     )
 
     wm = _load_world_model(wm_checkpoint, action_dim, proprio_dim, cfg, device)
+
+    if classifier_checkpoint is not None:
+        clf_sd = torch.load(classifier_checkpoint, map_location="cpu")
+        fh_sd = {k: v for k, v in clf_sd.items() if "failure_head" in k}
+        wm.load_state_dict(fh_sd, strict=False)
+        logging.info(f"Loaded failure_head from classifier checkpoint: {classifier_checkpoint} ({len(fh_sd)} tensors)")
 
     # predictor_dim = emb_dim + (action_emb_dim + proprio_emb_dim) * concat_dim
     from dino_wm.encoder import DinoV2Encoder as _Enc
@@ -354,7 +361,9 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train latent-space safety DDPG")
     p.add_argument("--wm_checkpoint", required=True,
                    help="Path to VWorldModel model.pt (with or without failure_head)")
-    p.add_argument("--dataset_repo_id", default="AndrewNoviello/domino-world-v2")
+    p.add_argument("--classifier_checkpoint", default=None,
+                   help="Optional path to classifier_best.pt to load pre-trained failure_head weights")
+    p.add_argument("--dataset_repo_id", default="various-and-sundry/domino-world-v3-labeled")
     p.add_argument("--output_dir",      default="outputs/safety_ddpg")
     p.add_argument("--warmup_steps",    type=int,   default=10_000)
     p.add_argument("--train_steps",     type=int,   default=40_000,
@@ -374,6 +383,7 @@ if __name__ == "__main__":
         wm_checkpoint=args.wm_checkpoint,
         dataset_repo_id=args.dataset_repo_id,
         output_dir=args.output_dir,
+        classifier_checkpoint=args.classifier_checkpoint,
         warmup_steps=args.warmup_steps,
         train_steps_per_epoch=args.train_steps,
         num_train_epochs=args.num_epochs,
