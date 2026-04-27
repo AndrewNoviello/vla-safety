@@ -9,7 +9,7 @@ from transformers import AutoTokenizer
 from utils.types import PolicyFeature
 from utils.constants import ACTION
 from utils.processor_utils import (
-    add_batch_dim,
+    add_batch_dim as _add_batch_dim,
     normalize,
     resize_images_in_batch,
     to_device,
@@ -46,7 +46,7 @@ def preprocess_pi0(
     """Preprocess a batch for PI0 (training or inference)."""
     stats = stats or {}
     if add_batch_dim:
-        batch = add_batch_dim(batch)
+        batch = _add_batch_dim(batch)
     batch = _ensure_newline(batch)
     batch = tokenize_batch(
         batch,
