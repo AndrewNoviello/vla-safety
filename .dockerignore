@@ -8,10 +8,15 @@ dist/
 .venv/
 
 outputs/
+multirun/
 .hydra/
 wandb/
+log/
 *.pt
+*.pth
 *.ckpt
+*.safetensors
+*.bin
 
 .DS_Store
 .claude/

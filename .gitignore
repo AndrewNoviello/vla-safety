@@ -1,20 +1,33 @@
 # Python
 __pycache__/
 *.py[cod]
+*.so
 *.egg-info/
 .eggs/
 build/
 dist/
 .venv/
+venv/
+.pytest_cache/
+
+# Secrets
+.env
 
 # Hydra runtime artifacts
 outputs/
+multirun/
 .hydra/
+
+# ROS 2 runtime logs
+log/
 
 # ML training artifacts
 wandb/
 *.pt
+*.pth
 *.ckpt
+*.safetensors
+*.bin
 
 # OS / editor
 .DS_Store
