@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+
+# Hydra runtime artifacts
+outputs/
+.hydra/
+
+# ML training artifacts
+wandb/
+*.pt
+*.ckpt
+
+# OS / editor
+.DS_Store
+
+# Claude Code (user-specific)
+.claude/settings.local.json

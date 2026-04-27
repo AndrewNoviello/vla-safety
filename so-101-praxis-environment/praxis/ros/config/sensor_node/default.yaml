@@ -1,7 +1,0 @@
-# @package sensor_node
-
-_target_: praxis.ros.sensor_node.SensorNodeConfig
-update_rate: 30.0  # Hz - rate at which sensor readings are published
-sensor_reading_topic: "sensor_reading"  # Topic to publish sensor data
-status_topic: "sensor_status"  # Topic to publish sensor status
-

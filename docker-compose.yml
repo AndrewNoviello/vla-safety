@@ -1,0 +1,28 @@
+services:
+  vla_safety:
+    build: .
+    network_mode: host
+    privileged: true
+    devices:
+      - "/dev/ttyACM0:/dev/ttyACM0"
+      - "/dev/ttyACM1:/dev/ttyACM1"
+    volumes:
+      - .:/workspace/vla-safety
+      - ./calibration:/workspace/vla-safety/calibration
+    working_dir: /workspace/vla-safety
+    environment:
+      - ROS_DOMAIN_ID=0
+      - HF_LEROBOT_CALIBRATION=/workspace/vla-safety/calibration
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    stdin_open: true
+    tty: true
+    command: bash
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+

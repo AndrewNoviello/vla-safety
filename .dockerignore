@@ -1,0 +1,17 @@
+.git/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+
+outputs/
+.hydra/
+wandb/
+*.pt
+*.ckpt
+
+.DS_Store
+.claude/

@@ -1,4 +1,0 @@
-rowlet_leader: /dev/ttyACM0
-piplup_leader: /dev/ttyACM1
-rowlet_follower: /dev/ttyACM3
-piplup_leader: /dev/ttyACM2

@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=71.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vla-safety"
+version = "0.1.0"
+description = "SO101 ROS2 hardware bridge + PI0 / DINO-WM / latent-safety stack."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Praxis Lab" }]
+dependencies = [
+    # Core ML — torch/tv/ta cu130 wheels installed via --extra-index-url https://download.pytorch.org/whl/cu130
+    "torch==2.10.*",
+    "torchvision==0.25.*",
+    "torchaudio==2.10.*",
+    "numpy>=1.26,<3",
+    "scipy>=1.10.1",
+    "einops>=0.8.0",
+    "safetensors>=0.4.3",
+    "accelerate>=1.10.0",
+    "diffusers>=0.27.2",
+    # HuggingFace
+    "huggingface-hub[hf-transfer]>=0.34.2",
+    "datasets>=4.0.0,<5.0.0",
+    # PI0 requires a patched transformers fork:
+    "transformers @ git+https://github.com/huggingface/transformers.git@fix/lerobot_openpi",
+    # Video / vision
+    "av>=15.0.0,<17.0.0",
+    "opencv-python-headless>=4.9.0",
+    # Robotics + config (was praxis-only)
+    "hydra-core",
+    "omegaconf",
+    "lerobot==0.4.4",
+    "feetech-servo-sdk",
+    # Utilities
+    "packaging>=24.2",
+    "termcolor>=2.4.0",
+    "wandb>=0.24.0",
+]
+
+[project.optional-dependencies]
+peft = [
+    "peft>=0.13.0",
+]
+server = [
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.20.0",
+    "pydantic>=2.0.0",
+]
+dev = [
+    "pytest>=8.1.0",
+    "pytest-timeout>=2.4.0",
+    "pre-commit>=3.7.0",
+]
+
+[project.scripts]
+so101-robot-node = "hardware.ros.scripts.robot_node_launcher:main"
+vla-deploy-ros = "scripts.deploy_ros:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hardware*", "pi0*", "dino_wm*", "latentsafe*", "data*", "utils*", "scripts*"]
+exclude = ["configs*", "calibration*", "assets*", "outputs*", "tests*"]

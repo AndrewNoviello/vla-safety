@@ -1,0 +1,9 @@
+# @package ros_node
+
+_target_: hardware.ros.robot_node.RobotNodeConfig
+update_rate: 20.0
+joint_state_topic: "joint_state"
+joint_command_topic: "joint_command"
+estop_topic: "estop"
+status_topic: "robot_status"
+control_mode: "joint_pos"

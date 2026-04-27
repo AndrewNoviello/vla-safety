@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - robot: so101real
+  - ros_node: default
+  - _self_
+
+# Global configuration
+hydra:
+  run:
+    dir: ./outputs/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    chdir: true
