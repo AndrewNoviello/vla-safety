@@ -2,3 +2,7 @@
 *.mp4
 outputs/
 *__pycache__*
+vla_safety.egg-info/
+success-1/
+success-2/
+build/

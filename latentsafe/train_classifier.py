@@ -262,10 +262,11 @@ def train(
     # NOTE: The dataset must contain a "failure_label" key with integer labels {0,1,2}.
     # If it does not, all samples will be treated as safe (label=0) and the classifier
     # will not learn anything useful. Label your trajectories before running this script.
-    has_labels = "failure_label" in (dataset[0] if hasattr(dataset, "__getitem__") else {})
+    # For datasets with a "safety" string column, LeRobotDataset maps it automatically.
+    has_labels = "safety" in dataset.hf_dataset.column_names
     if not has_labels:
         logging.warning(
-            "Dataset does not contain 'failure_label'. All samples will be treated as "
+            "Dataset has no 'safety' column. All samples will be treated as "
             "safe (label=0). The failure head will not learn to distinguish safe/unsafe."
         )
 
@@ -292,6 +293,13 @@ def train(
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+
+    logging.info("=== Classifier Training ===")
+    logging.info(f"  Dataset:   {len(dataset)} frames, {dataset.num_episodes} episodes")
+    logging.info(f"  Split:     train={n_train}  val={n_val}")
+    logging.info(f"  Steps:     {steps}  batch={batch_size}  lr={lr}")
+    logging.info(f"  Device:    {device}  has_labels={has_labels}")
+    logging.info(f"  Output:    {output_path}")
 
     best_val_loss = float("inf")
     train_iter = cycle(train_loader)
@@ -328,12 +336,20 @@ def train(
 
         # --- Logging ---
         if step % log_freq == 0:
-            logging.info(f"[step {step}/{steps}] train_loss={loss.item():.4f}")
+            safe_mask   = (labels == 0)
+            unsafe_mask = (labels > 0)
+            safe_score   = scores_last[safe_mask].mean().item()   if safe_mask.any()   else float("nan")
+            unsafe_score = scores_last[unsafe_mask].mean().item() if unsafe_mask.any() else float("nan")
+            logging.info(
+                f"[step {step}/{steps}] loss={loss.item():.4f}"
+                f"  safe_score={safe_score:+.3f} (n={safe_mask.sum().item()})"
+                f"  unsafe_score={unsafe_score:+.3f} (n={unsafe_mask.sum().item()})"
+            )
 
         # --- Validation ---
         if step % save_freq == 0:
             model.failure_head.eval()
-            val_losses = []
+            val_losses, all_vscores, all_vlabels = [], [], []
             with torch.no_grad():
                 for vbatch in val_loader:
                     vbatch = normalize(vbatch, dataset.stats, policy_features, NORM_MAP)
@@ -350,9 +366,24 @@ def train(
                     else:
                         vlabels = torch.zeros(vscores.shape[0], dtype=torch.long, device=device)
                     val_losses.append(fail_loss(vscores, vlabels).item())
+                    all_vscores.append(vscores.cpu())
+                    all_vlabels.append(vlabels.cpu())
 
             val_loss = float(np.mean(val_losses))
-            logging.info(f"[step {step}] val_loss={val_loss:.4f}")
+
+            all_vscores_t = torch.cat(all_vscores)
+            all_vlabels_t = torch.cat(all_vlabels)
+            vsafe_mask   = (all_vlabels_t == 0)
+            vunsafe_mask = (all_vlabels_t > 0)
+            val_accuracy = ((all_vscores_t > 0).long() == (all_vlabels_t > 0).long()).float().mean().item()
+            val_safe_score   = all_vscores_t[vsafe_mask].mean().item()   if vsafe_mask.any()   else float("nan")
+            val_unsafe_score = all_vscores_t[vunsafe_mask].mean().item() if vunsafe_mask.any() else float("nan")
+
+            logging.info(
+                f"[step {step}] val_loss={val_loss:.4f}  accuracy={val_accuracy:.3f}"
+                f"  safe_score={val_safe_score:+.3f} (n={vsafe_mask.sum().item()})"
+                f"  unsafe_score={val_unsafe_score:+.3f} (n={vunsafe_mask.sum().item()})"
+            )
 
             ckpt = output_path / f"classifier_step{step:06d}.pt"
             torch.save(model.state_dict(), ckpt)
@@ -375,7 +406,7 @@ def train(
 def _parse_args():
     p = argparse.ArgumentParser(description="Fine-tune failure_head of VWorldModel")
     p.add_argument("--wm_checkpoint", required=True, help="Path to VWorldModel model.pt")
-    p.add_argument("--dataset_repo_id", default="AndrewNoviello/domino-world-v2")
+    p.add_argument("--dataset_repo_id", default="various-and-sundry/domino-world-v3-labeled")
     p.add_argument("--steps", type=int, default=10_000)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--lr", type=float, default=1e-4)

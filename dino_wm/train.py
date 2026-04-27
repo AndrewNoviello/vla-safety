@@ -23,7 +23,7 @@ from utils.utils import format_big_number, init_logging
 from utils.wandb_utils import WandBLogger
 
 CFG = DinoWMConfig(
-    dataset_repo_id="AndrewNoviello/domino-world-v2",
+    dataset_repo_id="AndrewNoviello/domino-world-v3",
 
     # Temporal window
     # frameskip=3 subsamples 30fps → effective 10fps so consecutive frames
@@ -58,7 +58,7 @@ CFG = DinoWMConfig(
     decoder_n_res_channel=128,
 
     # Training — larger batch/workers for better GPU utilization (A40 has headroom)
-    steps=50_000,
+    steps=60_000,
     batch_size=24,
     num_workers=6,
     seed=42,
@@ -69,7 +69,7 @@ CFG = DinoWMConfig(
     grad_clip_norm=1.0,
 
     # Logging
-    output_dir="outputs/dino_wm_v2",
+    output_dir="outputs/dino_wm_v3",
     log_freq=100,
     save_freq=10_000,
     save_checkpoint=True,
@@ -78,7 +78,7 @@ CFG = DinoWMConfig(
     wandb_entity=None,
 
     # Upload checkpoints to this HuggingFace model repo after training
-    hf_model_repo_id="AndrewNoviello/domino-world-wm-v2",
+    hf_model_repo_id="AndrewNoviello/domino-world-wm-v3",
 )
 
 # VISUAL: normalize() always applies ImageNet mean/std for VISUAL features

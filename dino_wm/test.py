@@ -160,14 +160,19 @@ def main():
         "--save-frames", action="store_true",
         help="Also save individual PNG frames alongside the video",
     )
+    parser.add_argument(
+        "--dataset-repo-id", default=CFG.dataset_repo_id,
+        help="Dataset repo ID or local folder name under HF_LEROBOT_HOME (default: %(default)s)",
+    )
     args = parser.parse_args()
 
     output_path = Path(args.output or f"wm_comparison_ep{args.episode:03d}.mp4")
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-    print(f"Loading dataset: {CFG.dataset_repo_id}")
+    dataset_repo_id = args.dataset_repo_id
+    print(f"Loading dataset: {dataset_repo_id}")
     dataset = LeRobotDataset(
-        CFG.dataset_repo_id,
+        dataset_repo_id,
         delta_indices=None,
         image_transforms=None,   # we resize manually in load_episode()
     )

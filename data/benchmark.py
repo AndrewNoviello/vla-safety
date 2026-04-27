@@ -2,17 +2,20 @@
 import time
 
 import torch
+from torchvision import transforms
 
 from data.lerobot_dataset import LeRobotDataset
 
-DATASET_REPO_ID = "lerobot/pusht_image"
+DATASET_REPO_ID = "various-and-sundry/domino-world-v3-labeled"
 BATCH_SIZE = 32
 NUM_WORKERS = 4
 NUM_BATCHES = 20
+IMAGE_SIZE = 224
 
 
 def main():
-    dataset = LeRobotDataset(DATASET_REPO_ID)
+    image_transforms = transforms.Resize((IMAGE_SIZE, IMAGE_SIZE), antialias=True)
+    dataset = LeRobotDataset(DATASET_REPO_ID, image_transforms=image_transforms)
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=BATCH_SIZE,
