@@ -1,0 +1,14 @@
+# @package _global_
+
+defaults:
+  - sensor: gsmini
+  - sensor_node: default
+  - _self_
+
+# Global configuration for sensor nodes
+hydra:
+  run:
+    dir: ./outputs/sensor_${sensor.config.name}/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    chdir: false
+

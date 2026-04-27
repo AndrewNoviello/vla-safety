@@ -1,0 +1,17 @@
+# @package robot
+
+_target_: praxis.robots.ur5sim.UR5Sim
+config:
+  name: "ur5sim"
+  dof: 6
+  init_joint_positions: [1.5708, -1.5708, 1.5708, -1.5708, -1.5708, 0]
+  joint_limits_lower: [-3.1416, -3.1416, -3.1416, -3.1416, -3.1416, -3.1416]
+  joint_limits_upper: [3.1416, 3.1416, 3.1416, 3.1416, 3.1416, 3.1416]
+  ee_site_name: "attachment_site"
+  sim_dt: 0.002
+  gravity_compensation: true
+  enable_viewer: true
+  viewer_fps: 30.0
+  integration_dt: 1.0
+  damping: 1e-4
+  max_angvel: 0.0

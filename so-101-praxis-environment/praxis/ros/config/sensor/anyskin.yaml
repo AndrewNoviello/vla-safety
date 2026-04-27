@@ -1,0 +1,11 @@
+_target_: praxis.sensing.anyskin.AnySkinSensor
+config:
+  # Sensor metadata
+  name: 'anyskin'
+  sample_rate: 30.0  # Hz
+  timeout: 1.0  # seconds
+  auto_start: true
+  
+  # AnySkin configuration
+  port: "/dev/ttyACM0"
+  num_mags: 5  # Number of magnetometers

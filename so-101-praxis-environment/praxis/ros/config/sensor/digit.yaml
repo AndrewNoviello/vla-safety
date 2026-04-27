@@ -1,0 +1,16 @@
+# @package sensor
+
+_target_: praxis.sensing.digit.DigitSensor
+config:
+  # Sensor metadata
+  name: 'digit'
+  sample_rate: 15.0  # Hz
+  timeout: 1.0  # seconds
+  auto_start: true
+  id: '-1'
+  # Camera device configuration
+  device_name: "DIGIT"  
+  # Desired output image dimensions
+  imgh: 224  # Output image height
+  imgw: 224  # Output image width
+  

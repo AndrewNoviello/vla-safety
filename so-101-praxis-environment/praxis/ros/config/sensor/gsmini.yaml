@@ -1,0 +1,26 @@
+# @package sensor
+
+_target_: praxis.sensing.gsmini.GSMiniSensor
+config:
+  # Sensor metadata
+  name: 'gsmini'
+  sample_rate: 25.0  # Hz
+  timeout: 1.0  # seconds
+  auto_start: true
+  id: '-1'
+  
+  # Camera device configuration
+  device_name: "GelSight Mini"
+  
+  # Desired output image dimensions
+  imgh: 224  # Output image height
+  imgw: 224  # Output image width
+  
+  # Raw camera parameters (for GelSight Mini hardware)
+  raw_imgh: 2464  # Raw camera height
+  raw_imgw: 3280  # Raw camera width
+  framerate: 25  # Camera framerate
+  
+  # Logging
+  verbose: true  # Verbose camera initialization and logging
+

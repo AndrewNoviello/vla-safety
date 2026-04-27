@@ -1,0 +1,7 @@
+_target_: praxis.sensing.FT.FTSensor
+config:
+  # Sensor metadata
+    name: 'ft_sensor'
+    sample_rate: 1000.0  # Hz
+    timeout: 1.0  # seconds
+    ip_address: "192.168.1.20"

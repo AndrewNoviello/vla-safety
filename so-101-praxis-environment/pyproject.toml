@@ -1,0 +1,51 @@
+[build-system]
+requires = [
+  "setuptools>=61",
+  "wheel"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "praxis-core"
+version = "0.0.1"
+description = "Praxis Core - Base code for the Praxis Lab."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Praxis Lab" }
+]
+dependencies = [
+  "numpy",
+  "hydra-core",
+  "omegaconf",
+  "scipy",
+  "mujoco",
+  "hid",
+  "ur-rtde>=1.5.5",
+  "opencv-python",
+  "ffmpeg-python",
+  "anyskin",
+]
+
+[project.optional-dependencies]
+real-ur5 = [
+  "ur-rtde>=1.5.5",
+]
+tactile = [
+  "opencv-python",
+  "ffmpeg-python",
+  "anyskin"
+]
+
+[project.scripts]
+praxis-run = "praxis.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"praxis" = ["cfgs/**/*.yaml"]
+
+[tool.setuptools.packages.find]
+include = ["praxis", "praxis.*"]
