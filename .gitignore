@@ -21,6 +21,9 @@ multirun/
 # ROS 2 runtime logs
 log/
 
+# Local recorder output (scripts/recorder.py)
+data/recordings/
+
 # ML training artifacts
 wandb/
 *.pt
