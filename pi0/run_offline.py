@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 import numpy as np
@@ -119,8 +120,6 @@ def run_inference(
 ):
     """Run one inference step: observation (numpy) -> preprocess -> policy -> postprocess -> action chunk."""
     observation = dict(observation)
-    print('observation: ' + str(observation))
-    print('input features: ' + str(policy.input_features))
     observation = prepare_observation_for_inference(
         observation,
         device=device,
@@ -148,7 +147,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="AndrewNoviello/vla-safety-task-1",
+        default="AndrewNoviello/vla-safety-task-4",
         help="Pretrained model id or path (default: lerobot/pi0_base)",
     )
     parser.add_argument(
@@ -193,6 +192,12 @@ def main():
         action="store_true",
         help="Disable torch.compile() on the model (faster load, slower inference)",
     )
+    parser.add_argument(
+        "--num-chunks",
+        type=int,
+        default=20,
+        help="Number of action chunks to predict in a loop on the same inputs (default: 20)",
+    )
     args = parser.parse_args()
 
     if args.device is not None:
@@ -226,7 +231,6 @@ def main():
     stats = prepare_stats(dataset_stats)
     all_features = {**policy.config.input_features, **policy.config.output_features}
     output_features = dict(policy.config.output_features)
-    norm_map = dict(policy.config.normalization_mapping)
     tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
 
     def preprocessor(obs):
@@ -234,7 +238,6 @@ def main():
             obs,
             stats=stats,
             all_features=all_features,
-            norm_map=norm_map,
             tokenizer=tokenizer,
             device=device,
             max_length=policy.config.tokenizer_max_length,
@@ -243,7 +246,7 @@ def main():
         )
 
     def postprocessor(action):
-        return postprocess_pi0(action, stats=stats, output_features=output_features, norm_map=norm_map)
+        return postprocess_pi0(action, stats=stats, output_features=output_features)
 
     observation = build_observation(
         policy,
@@ -255,28 +258,34 @@ def main():
     print(f"Observation keys: {list(observation.keys())}")
 
     use_amp = not args.no_amp and device.type == "cuda"
-    action = run_inference(
-        policy,
-        preprocessor,
-        postprocessor,
-        observation,
-        task=args.prompt,
-        device=device,
-        use_amp=use_amp,
-    )
 
-    action_np = action.numpy() if isinstance(action, torch.Tensor) else action
-    print(f"Action chunk shape: {action_np.shape}")
-    if action_np.ndim == 3:
-        print(f"Action chunk (first step): {action_np[0, 0, :]}")
-        print(f"Action chunk (last step):  {action_np[0, -1, :]}")
-    else:
-        print(f"Action (first step): {action_np[0, :]}")
+    times = []
+    action_np = None
+    for i in range(args.num_chunks):
+        t0 = time.perf_counter()
+        action = run_inference(
+            policy,
+            preprocessor,
+            postprocessor,
+            observation,
+            task=args.prompt,
+            device=device,
+            use_amp=use_amp,
+        )
+        dt = time.perf_counter() - t0
+        times.append(dt)
+        action_np = action.numpy() if isinstance(action, torch.Tensor) else action
+        print(f"[{i+1:02d}/{args.num_chunks}] {dt*1000:.0f} ms — first action: {action_np[0, 0, :]}")
 
-    if args.output:
+    print(f"\nDone. {args.num_chunks} chunks | "
+          f"mean {np.mean(times)*1000:.0f} ms | "
+          f"min {np.min(times)*1000:.0f} ms | "
+          f"max {np.max(times)*1000:.0f} ms")
+
+    if args.output and action_np is not None:
         to_save = action_np.squeeze(0) if action_np.ndim == 3 and action_np.shape[0] == 1 else action_np
         np.save(args.output, to_save)
-        print(f"Saved action chunk to {args.output}")
+        print(f"Saved last action chunk to {args.output}")
 
     return action_np
 

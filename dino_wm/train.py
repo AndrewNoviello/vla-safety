@@ -15,8 +15,7 @@ from dino_wm.decoder import Decoder
 
 from data.lerobot_dataset import LeRobotDataset
 from torchvision.transforms import v2 as T
-from data.utils import POLICY_FEATURES, cycle, dataset_to_policy_features
-from utils.types import FeatureType, NormalizationMode
+from data.utils import POLICY_FEATURES, cycle
 from utils.processor_utils import normalize, to_device
 from utils.train_utils import set_seed
 from utils.utils import format_big_number, init_logging
@@ -80,16 +79,6 @@ CFG = DinoWMConfig(
     # Upload checkpoints to this HuggingFace model repo after training
     hf_model_repo_id="AndrewNoviello/domino-world-wm-v2",
 )
-
-# VISUAL: normalize() always applies ImageNet mean/std for VISUAL features
-#         (hardcoded in normalize()), which is correct for DinoV2.
-# STATE / ACTION: use MEAN_STD from dataset statistics.
-DINO_WM_NORM_MAP = {
-    FeatureType.VISUAL: NormalizationMode.IDENTITY,   # ImageNet applied anyway
-    FeatureType.STATE:  NormalizationMode.MEAN_STD,
-    FeatureType.ACTION: NormalizationMode.MEAN_STD,
-}
-
 
 def _detect_image_key(features: dict) -> str:
     """Return the first image-dtype key in the dataset."""
@@ -238,7 +227,7 @@ def _reformat_batch(
     """Convert a LeRobot batch dict into VWorldModel inputs.
 
     LeRobot format (after normalise + to_device):
-        batch[image_key]  : (B, T, C, H, W)  float, ImageNet-normalised
+        batch[image_key]  : (B, T, C, H, W)  float [0, 1]
         batch["observation.state"]    : (B, T, state_dim)
         batch["action"]  : (B, T, action_dim)
 
@@ -346,8 +335,7 @@ def train(cfg: DinoWMConfig = CFG) -> None:
         if is_main:
             logging.info("Frame preload complete.")
 
-    # Build PolicyFeature dict for use with normalize()
-    policy_features = dataset_to_policy_features(POLICY_FEATURES)
+    policy_features = dataset.policy_features
 
     if is_main:
         logging.info("Building DINO-WM model")
@@ -407,8 +395,8 @@ def train(cfg: DinoWMConfig = CFG) -> None:
     for step in range(1, cfg.steps + 1):
         t0 = time.perf_counter()
         batch = next(dl_iter)
-        # Normalize (ImageNet for visual; MEAN_STD for state/action)
-        batch = normalize(batch, dataset.stats, policy_features, DINO_WM_NORM_MAP)
+        # Normalize state/action; visuals remain in [0, 1] for model-specific preprocessing.
+        batch = normalize(batch, dataset.stats, policy_features)
         batch = to_device(batch, device)
         dataloading_s = time.perf_counter() - t0
 

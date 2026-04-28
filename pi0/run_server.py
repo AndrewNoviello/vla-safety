@@ -119,7 +119,7 @@ app = FastAPI(
 )
 
 # Loaded at startup
-MODEL_ID = "AndrewNoviello/vla-safety-task-1"
+MODEL_ID = "AndrewNoviello/vla-safety-task-4"
 policy = None
 preprocessor = None
 postprocessor = None
@@ -153,7 +153,6 @@ def startup():
     stats = prepare_stats(dataset_stats)
     all_features = {**policy.config.input_features, **policy.config.output_features}
     output_features = dict(policy.config.output_features)
-    norm_map = dict(policy.config.normalization_mapping)
     tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
 
     def preprocessor(obs):
@@ -161,7 +160,6 @@ def startup():
             obs,
             stats=stats,
             all_features=all_features,
-            norm_map=norm_map,
             tokenizer=tokenizer,
             device=device,
             max_length=policy.config.tokenizer_max_length,
@@ -170,7 +168,7 @@ def startup():
         )
 
     def postprocessor(action):
-        return postprocess_pi0(action, stats=stats, output_features=output_features, norm_map=norm_map)
+        return postprocess_pi0(action, stats=stats, output_features=output_features)
     print("Policy loaded. Ready for /predict.")
 
 

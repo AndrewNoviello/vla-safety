@@ -40,8 +40,7 @@ from dino_wm.encoder import DinoV2Encoder
 from dino_wm.transition import TransitionModel
 from dino_wm.visual_world_model import VWorldModel
 from data.lerobot_dataset import LeRobotDataset
-from data.utils import POLICY_FEATURES, cycle, dataset_to_policy_features
-from utils.types import FeatureType, NormalizationMode
+from data.utils import POLICY_FEATURES, cycle
 from utils.processor_utils import normalize, to_device
 from utils.utils import init_logging
 
@@ -92,13 +91,6 @@ def fail_loss(scores: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-NORM_MAP = {
-    FeatureType.VISUAL: NormalizationMode.IDENTITY,
-    FeatureType.STATE:  NormalizationMode.MEAN_STD,
-    FeatureType.ACTION: NormalizationMode.MEAN_STD,
-}
-
 
 def _detect_image_key(features: dict) -> str:
     preferred = ("image0", "observation.image", "observation.images.front")
@@ -257,7 +249,7 @@ def train(
         delta_indices=delta_indices,
         image_transforms=T.Resize((cfg.img_size, cfg.img_size), antialias=True),
     )
-    policy_features = dataset_to_policy_features(POLICY_FEATURES)
+    policy_features = dataset.policy_features
 
     # NOTE: The dataset must contain a "failure_label" key with integer labels {0,1,2}.
     # If it does not, all samples will be treated as safe (label=0) and the classifier
@@ -299,7 +291,7 @@ def train(
     for step in range(1, steps + 1):
         # --- Train step ---
         batch = next(train_iter)
-        batch = normalize(batch, dataset.stats, policy_features, NORM_MAP)
+        batch = normalize(batch, dataset.stats, policy_features)
         batch = to_device(batch, device)
 
         visual = batch[image_key].float()
@@ -336,7 +328,7 @@ def train(
             val_losses = []
             with torch.no_grad():
                 for vbatch in val_loader:
-                    vbatch = normalize(vbatch, dataset.stats, policy_features, NORM_MAP)
+                    vbatch = normalize(vbatch, dataset.stats, policy_features)
                     vbatch = to_device(vbatch, device)
                     vvisual = vbatch[image_key].float()
                     vobs = {"visual": vvisual, "proprio": vbatch["observation.state"].float()}

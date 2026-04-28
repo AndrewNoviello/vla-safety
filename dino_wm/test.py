@@ -32,11 +32,9 @@ from torchvision.transforms import v2 as TVT  # avoid shadowing frame-count var 
 
 from dino_wm.config import DinoWMConfig
 from data.lerobot_dataset import LeRobotDataset
-from data.utils import POLICY_FEATURES, dataset_to_policy_features
-from utils.types import FeatureType, NormalizationMode
 from utils.processor_utils import normalize
 
-from dino_wm.train import CFG, DINO_WM_NORM_MAP
+from dino_wm.train import CFG
 from dino_wm.inference import DinoWMInference, _ACTION_DIM, _PROPRIO_DIM
 
 
@@ -171,7 +169,7 @@ def main():
         delta_indices=None,
         image_transforms=None,   # we resize manually in load_episode()
     )
-    policy_features = dataset_to_policy_features(POLICY_FEATURES)
+    policy_features = dataset.policy_features
     print(f"  {dataset.num_episodes} episodes, {dataset.num_frames} total frames")
 
     print(f"\nLoading episode {args.episode} (frameskip={CFG.frameskip}) ...")
@@ -190,7 +188,6 @@ def main():
         {"observation.state": states, "action": actions},
         dataset.stats,
         policy_features,
-        DINO_WM_NORM_MAP,
     )
     states_norm  = norm_batch["observation.state"]   # (T, 6)
     actions_norm = norm_batch["action"]              # (T, 6)

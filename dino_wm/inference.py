@@ -22,7 +22,7 @@ import torch
 
 from dino_wm.config import DinoWMConfig
 from data.utils import POLICY_FEATURES
-from dino_wm.train import CFG, DINO_WM_NORM_MAP, _build_model
+from dino_wm.train import CFG, _build_model
 from dino_wm.visual_world_model import VWorldModel
 from einops import rearrange
 

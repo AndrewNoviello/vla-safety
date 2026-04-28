@@ -9,6 +9,7 @@ from huggingface_hub import snapshot_download
 from data.utils import (
     PARQUET_FEATURES,
     POLICY_FEATURES,
+    dataset_to_policy_features,
     hf_transform_to_torch,
     load_episode_parquets,
     load_stats,
@@ -85,6 +86,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
             raw_stats["observation.state"] = raw_stats.pop("state")
         self._stats = raw_stats
         self.features = POLICY_FEATURES
+        self.policy_features = dataset_to_policy_features(self.features)
         self.stats = self._stats
 
     def _keys_by_dtype(self, *dtypes: str) -> list[str]:

@@ -50,16 +50,8 @@ from torchvision.transforms import v2 as T
 
 from dino_wm.visual_world_model import VWorldModel
 from data.lerobot_dataset import LeRobotDataset
-from data.utils import POLICY_FEATURES, dataset_to_policy_features
-from utils.types import FeatureType, NormalizationMode
+from data.utils import POLICY_FEATURES
 from utils.processor_utils import normalize
-
-
-_NORM_MAP = {
-    FeatureType.VISUAL: NormalizationMode.IDENTITY,
-    FeatureType.STATE:  NormalizationMode.MEAN_STD,
-    FeatureType.ACTION: NormalizationMode.MEAN_STD,
-}
 
 _IMG_TRANSFORM = T.Resize((224, 224), antialias=True)
 
@@ -122,7 +114,7 @@ class WorldModelEnv(gym.Env):
         self.num_hist = num_hist
         self.max_episode_steps = max_episode_steps
         self.frameskip = frameskip
-        self._policy_features = dataset_to_policy_features(POLICY_FEATURES)
+        self._policy_features = dataset.policy_features
         self._image_key = _detect_image_key(POLICY_FEATURES)
 
         self.observation_space = spaces.Box(
@@ -183,7 +175,7 @@ class WorldModelEnv(gym.Env):
             "observation.state": proprio,
             "action": action,
         }
-        batch = normalize(batch, self.dataset.stats, self._policy_features, _NORM_MAP)
+        batch = normalize(batch, self.dataset.stats, self._policy_features)
 
         return (
             batch[self._image_key].float().to(self.device),

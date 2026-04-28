@@ -28,19 +28,11 @@ from dino_wm.encoder import DinoV2Encoder
 from dino_wm.transition import TransitionModel
 from dino_wm.visual_world_model import VWorldModel
 from data.lerobot_dataset import LeRobotDataset
-from data.utils import POLICY_FEATURES, dataset_to_policy_features
-from utils.types import FeatureType, NormalizationMode
+from data.utils import POLICY_FEATURES
 from utils.processor_utils import normalize, to_device
 from utils.utils import init_logging
 
 logging.basicConfig(level=logging.INFO)
-
-_NORM_MAP = {
-    FeatureType.VISUAL: NormalizationMode.IDENTITY,
-    FeatureType.STATE:  NormalizationMode.MEAN_STD,
-    FeatureType.ACTION: NormalizationMode.MEAN_STD,
-}
-
 
 def _detect_image_key(features: dict) -> str:
     preferred = ("image0", "observation.image", "observation.images.front")
@@ -166,7 +158,7 @@ def evaluate(
         delta_indices=delta_indices,
         image_transforms=T.Resize((img_size, img_size), antialias=True),
     )
-    policy_features = dataset_to_policy_features(POLICY_FEATURES)
+    policy_features = dataset.policy_features
 
     # Cap to num_samples
     indices_to_eval = list(range(min(num_samples, len(dataset))))
@@ -181,7 +173,7 @@ def evaluate(
 
     with torch.no_grad():
         for batch in loader:
-            batch = normalize(batch, dataset.stats, policy_features, _NORM_MAP)
+            batch = normalize(batch, dataset.stats, policy_features)
             batch = to_device(batch, device)
 
             visual = batch[image_key].float()

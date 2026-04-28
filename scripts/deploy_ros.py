@@ -61,7 +61,6 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float64MultiArray
 
-from latentsafe.safety_filter import LatentSafetyFilter
 from utils.paths import ASSETS
 
 logging.basicConfig(level=logging.INFO)
@@ -78,7 +77,7 @@ IMG_SIZE = 224
 ACTION_DIM = 6
 PROPRIO_DIM = 6
 
-PI0_MODEL_ID = "AndrewNoviello/vla-safety-task-1"
+PI0_MODEL_ID = "AndrewNoviello/vla-safety-task-4"
 DEFAULT_PROMPT = (
     "pick up the middle domino from the three domino row and place it flat "
     "on top of the other two dominos to form an arch"
@@ -90,7 +89,7 @@ DEFAULT_PROMPT = (
 # ═══════════════════════════════════════════════════════════════════════════
 
 class PI0Wrapper:
-    """Wraps PI0Policy for single-step inference."""
+    """Wraps PI0Policy for action-chunk inference."""
 
     def __init__(self, model_id: str, prompt: str, stats_path: str, device: str):
         from transformers import AutoTokenizer
@@ -98,8 +97,7 @@ class PI0Wrapper:
         from pi0.policy import PI0Policy
         from pi0.processor import preprocess_pi0, postprocess_pi0
         from utils.utils import cast_stats_to_numpy, load_json
-        from utils.processor_utils import prepare_stats, prepare_observation_for_inference
-        from utils.types import FeatureType, NormalizationMode
+        from utils.processor_utils import prepare_observation_for_inference, prepare_stats
         from utils.constants import OBS_STATE
 
         self.device = torch.device(device)
@@ -122,11 +120,6 @@ class PI0Wrapper:
             **self.policy.config.output_features,
         }
         self._output_features = dict(self.policy.config.output_features)
-        self._norm_map = {
-            FeatureType.VISUAL: NormalizationMode.IDENTITY,
-            FeatureType.STATE: NormalizationMode.MEAN_STD,
-            FeatureType.ACTION: NormalizationMode.MEAN_STD,
-        }
         self._tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
         self._image_resolution = tuple(self.policy.image_resolution)
         self._preprocess_pi0 = preprocess_pi0
@@ -139,8 +132,8 @@ class PI0Wrapper:
         self.policy.reset()
 
     @torch.no_grad()
-    def get_action(self, image_rgb: np.ndarray, proprio_raw: np.ndarray) -> np.ndarray:
-        """(H,W,3) uint8 RGB + (6,) float → (6,) float raw joint command."""
+    def predict_action_chunk(self, image_rgb: np.ndarray, proprio_raw: np.ndarray) -> np.ndarray:
+        """(H,W,3) uint8 RGB + (6,) float → (chunk_size, action_dim) float array."""
         from utils.types import FeatureType
 
         observation = {}
@@ -170,7 +163,6 @@ class PI0Wrapper:
             observation,
             stats=self._stats,
             all_features=self._all_features,
-            norm_map=self._norm_map,
             tokenizer=self._tokenizer,
             device=self.device,
             max_length=self.policy.config.tokenizer_max_length,
@@ -182,9 +174,8 @@ class PI0Wrapper:
             action_chunk,
             stats=self._stats,
             output_features=self._output_features,
-            norm_map=self._norm_map,
         )
-        return action_chunk[0, 0].numpy()
+        return action_chunk[0].numpy()  # (chunk_size, action_dim)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -203,7 +194,8 @@ class SafeDeploymentNode(Node):
 
     At each tick of the control timer:
       1. Grab the latest camera image and joint state from the hardware bridge.
-      2. Run PI0 to get a proposed action.
+      2. If the action queue is empty, run PI0 to get a new action chunk (all
+         chunk_size actions are enqueued and executed one-per-tick).
       3. Pass the proposed action through the safety filter.
       4. Publish the (possibly overridden) action back to the hardware bridge.
     """
@@ -243,6 +235,7 @@ class SafeDeploymentNode(Node):
 
         # --- Load safety filter ---
         if not disable_safety:
+            from latentsafe.safety_filter import LatentSafetyFilter
             self.get_logger().info("Loading Latent Safety Filter ...")
             self._safety = LatentSafetyFilter(
                 wm_checkpoint=wm_checkpoint,
@@ -258,19 +251,26 @@ class SafeDeploymentNode(Node):
             self.get_logger().warn("Safety filter DISABLED — running PI0 unfiltered!")
 
         # --- ROS subscriptions and publisher ---
-        qos = QoSProfile(
+        # Sensor topics: BEST_EFFORT (high-rate, drop-ok)
+        sensor_qos = QoSProfile(
             depth=2,
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self.create_subscription(
-            JointState, f"{ROBOT_NS}/joint_state", self._cb_joint_state, qos
+        # Command topic: RELIABLE (don't drop joint commands)
+        cmd_qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
         )
         self.create_subscription(
-            Image, f"{ROBOT_NS}/camera/image", self._cb_camera, qos
+            JointState, f"{ROBOT_NS}/joint_state", self._cb_joint_state, sensor_qos
+        )
+        self.create_subscription(
+            Image, f"{ROBOT_NS}/camera/image", self._cb_camera, sensor_qos
         )
         self._cmd_pub = self.create_publisher(
-            Float64MultiArray, f"{ROBOT_NS}/joint_command", qos
+            Float64MultiArray, f"{ROBOT_NS}/joint_command", cmd_qos
         )
 
         self.create_timer(1.0 / control_hz, self._control_tick)
@@ -312,17 +312,19 @@ class SafeDeploymentNode(Node):
         if image is None or proprio is None:
             return  # Hardware bridge not publishing yet
 
-        # --- Get action from PI0 ---
+        # --- Refill action queue from PI0 when exhausted ---
         if len(self._action_queue) == 0:
             t0 = time.perf_counter()
             try:
-                action_raw = self._pi0.get_action(image, proprio)
-                self._action_queue.append(action_raw)
+                action_chunk = self._pi0.predict_action_chunk(image, proprio)
+                self._action_queue.extend(action_chunk)  # enqueue all chunk_size actions
             except Exception as e:
                 self.get_logger().error(f"PI0 inference failed: {e}")
                 return
             dt = time.perf_counter() - t0
-            self.get_logger().debug(f"PI0 inference: {dt * 1000:.0f} ms")
+            self.get_logger().info(
+                f"PI0 inference: {dt * 1000:.0f} ms — {len(self._action_queue)} actions queued"
+            )
 
         proposed_action = self._action_queue.popleft()
 

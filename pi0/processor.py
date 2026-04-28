@@ -35,7 +35,6 @@ def preprocess_pi0(
     batch: dict[str, Any],
     stats: dict[str, dict[str, Any]] | None,
     all_features: dict[str, PolicyFeature],
-    norm_map: dict[str, Any],
     tokenizer: AutoTokenizer,
     device: str | torch.device,
     *,
@@ -58,7 +57,7 @@ def preprocess_pi0(
     batch = to_device(batch, device)
     if image_resolution is not None:
         batch = resize_images_in_batch(batch, image_resolution, all_features)
-    batch = normalize(batch, stats, all_features, norm_map)
+    batch = normalize(batch, stats, all_features)
     return batch
 
 
@@ -66,8 +65,7 @@ def postprocess_pi0(
     action: torch.Tensor,
     stats: dict[str, dict[str, Any]],
     output_features: dict[str, PolicyFeature],
-    norm_map: dict[str, Any],
 ) -> torch.Tensor:
     """Postprocess PI0 action output (unnormalize and move to CPU)."""
-    result = unnormalize({ACTION: action}, stats, output_features, norm_map)
+    result = unnormalize({ACTION: action}, stats, output_features)
     return result[ACTION].to("cpu")

@@ -7,7 +7,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
-from utils.types import FeatureType, NormalizationMode, PolicyFeature
+from utils.types import FeatureType, PolicyFeature
 from utils.constants import (
     ACTION,
     OBS_ENV_STATE,
@@ -292,52 +292,49 @@ def _ensure_stats_compat(
 
 def normalize(
     batch: dict[str, Any],
-    stats: dict[str, dict[str, torch.Tensor]],
+    stats: dict[str, dict[str, torch.Tensor]] | None,
     features: dict[str, PolicyFeature],
-    norm_map: dict[FeatureType | str, NormalizationMode | str],
     eps: float = 1e-8,
 ) -> dict[str, Any]:
     """Normalize observation and action keys in *batch* (forward pass).
 
-    Uses MEAN_STD from stats for each key. Stats file should include mean/std for all
-    features (e.g. ImageNet values for images, dataset stats for state/actions).
+    Visual features are identity by default. State and action features use dataset
+    mean/std by default.
     """
+    stats = stats or {}
     result = dict(batch)
-    for key in features:
+    for key, feature in features.items():
         if key not in result:
             continue
         tensor = result[key]
         if not isinstance(tensor, Tensor):
             continue
-        if key in stats:
-            sub = _ensure_stats_compat(stats, key, tensor)
-            mean, std = sub["mean"], sub["std"]
-            # Reshape (C,) channel stats to broadcast against (..., C, H, W) spatial tensors
-            if mean.ndim == 1 and tensor.ndim >= 4:
-                mean = mean.view([1] * (tensor.ndim - 3) + [mean.shape[0], 1, 1])
-                std  = std.view( [1] * (tensor.ndim - 3) + [std.shape[0],  1, 1])
-            result[key] = (tensor - mean) / (std + eps)
+        if feature.type is FeatureType.VISUAL:
+            continue
+        if key not in stats or "mean" not in stats[key] or "std" not in stats[key]:
+            raise KeyError(f"Missing mean/std normalization stats for feature '{key}'.")
+        sub = _ensure_stats_compat(stats, key, tensor)
+        result[key] = (tensor - sub["mean"]) / (sub["std"] + eps)
     return result
 
 
 def unnormalize(
     batch: dict[str, Any],
-    stats: dict[str, dict[str, torch.Tensor]],
+    stats: dict[str, dict[str, torch.Tensor]] | None,
     features: dict[str, PolicyFeature],
-    norm_map: dict[FeatureType, NormalizationMode],
     eps: float = 1e-8,
 ) -> dict[str, Any]:
     """Unnormalize observation and action keys in *batch* (inverse pass)."""
-    if not stats:
-        return batch
+    stats = stats or {}
     result = dict(batch)
-    for key in features:
+    for key, feature in features.items():
         if key not in result or not isinstance(result[key], torch.Tensor):
             continue
-        if key not in stats:
+        if feature.type is FeatureType.VISUAL:
             continue
         tensor = result[key]
+        if key not in stats or "mean" not in stats[key] or "std" not in stats[key]:
+            raise KeyError(f"Missing mean/std normalization stats for feature '{key}'.")
         sub = _ensure_stats_compat(stats, key, tensor)
-        mean, std = sub["mean"], sub["std"]
-        result[key] = tensor * std + mean
+        result[key] = tensor * sub["std"] + sub["mean"]
     return result

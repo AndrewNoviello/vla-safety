@@ -6,12 +6,10 @@ import torch
 from termcolor import colored
 from torch.optim import Optimizer
 
-from utils.types import FeatureType, NormalizationMode
+from utils.types import FeatureType
 from data.lerobot_dataset import LeRobotDataset
 from data.utils import (
-    POLICY_FEATURES,
     cycle,
-    dataset_to_policy_features,
 )
 from pi0.config import PI0Config
 from pi0.policy import PI0Policy
@@ -94,14 +92,6 @@ def update_policy(
     return metrics
 
 
-# Hardcoded normalization for PI0
-PI0_NORM_MAP = {
-    FeatureType.VISUAL: NormalizationMode.IDENTITY,
-    FeatureType.STATE: NormalizationMode.MEAN_STD,
-    FeatureType.ACTION: NormalizationMode.MEAN_STD,
-}
-
-
 def train():
     init_logging()
 
@@ -133,7 +123,7 @@ def train():
         image_transforms=None,
     )
 
-    _features = dataset_to_policy_features(POLICY_FEATURES)
+    _features = dataset.policy_features
     _input_features = {k: v for k, v in _features.items() if v.type is not FeatureType.ACTION}
     _output_features = {k: v for k, v in _features.items() if v.type is FeatureType.ACTION}
     config = PI0Config(
@@ -183,8 +173,6 @@ def train():
     log_counts = {k: 0 for k in log_sums}
 
     all_features = {**policy.input_features, **policy.output_features}
-    norm_map = PI0_NORM_MAP
-
     tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
 
     for _ in range(step, STEPS):
@@ -193,7 +181,6 @@ def train():
             batch,
             stats=dataset.stats,
             all_features=all_features,
-            norm_map=norm_map,
             tokenizer=tokenizer,
             device=device,
             max_length=48,
