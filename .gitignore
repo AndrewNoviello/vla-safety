@@ -24,6 +24,10 @@ log/
 # Local recorder output (scripts/recorder.py)
 data/recordings/
 
+# HF dataset snapshots + merged/filtered exports (scripts/filter_recordings.py, merge_recordings.py, …)
+**/.hf_cache/
+data/exp_*/
+
 # ML training artifacts
 wandb/
 *.pt
