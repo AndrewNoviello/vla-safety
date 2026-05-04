@@ -37,3 +37,6 @@ wandb/
 
 # Claude Code (user-specific)
 .claude/settings.local.json
+__pycache__/
+*.py[cod]
+.claude
