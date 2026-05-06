@@ -28,11 +28,11 @@ be randomly initialised if missing).
 import argparse
 import logging
 import random
+from collections import deque
 from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
 from torchvision.transforms import v2 as T
 
 from dino_wm.config import DinoWMConfig
@@ -42,6 +42,7 @@ from dino_wm.transition import TransitionModel
 from dino_wm.visual_world_model import VWorldModel
 from data.lerobot_dataset import LeRobotDataset
 from data.utils import POLICY_FEATURES
+from latentsafe.cached_latent_dataset import CachedLatentDataset
 from latentsafe.wm_env import WorldModelEnv
 from latentsafe.ddpg_safety import SafetyDDPG, SafetyDDPGConfig
 from utils.utils import init_logging
@@ -135,13 +136,14 @@ def _load_world_model(
 
 def _make_env(
     wm: VWorldModel,
-    dataset: LeRobotDataset,
+    dataset,
     device: torch.device,
     action_dim: int,
     predictor_dim: int,
     num_hist: int,
     frameskip: int,
     max_episode_steps: int = 10,
+    p_unsafe_reset: float = 0.5,
 ) -> WorldModelEnv:
     return WorldModelEnv(
         wm=wm,
@@ -152,6 +154,7 @@ def _make_env(
         num_hist=num_hist,
         max_episode_steps=max_episode_steps,
         frameskip=frameskip,
+        p_unsafe_reset=p_unsafe_reset,
     )
 
 
@@ -159,8 +162,8 @@ def _make_env(
 # Checkpoint I/O
 # ---------------------------------------------------------------------------
 
-def _save_checkpoint(output_dir: Path, epoch: int, policy: SafetyDDPG) -> None:
-    ckpt_dir = output_dir / "checkpoints" / f"epoch_{epoch:04d}"
+def _save_checkpoint(output_dir: Path, global_step: int, policy: SafetyDDPG) -> None:
+    ckpt_dir = output_dir / "checkpoints" / f"step_{global_step:08d}"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     torch.save(policy.actor.state_dict(),  ckpt_dir / "actor.pt")
     torch.save(policy.critic.state_dict(), ckpt_dir / "critic.pt")
@@ -175,6 +178,7 @@ def train(
     wm_checkpoint: str,
     dataset_repo_id: str,
     output_dir: str = "outputs/safety_ddpg",
+    latent_cache_dir: str | None = "runs/dino_wm_exp_merged/latents",
     # World model config (must match checkpoint)
     num_hist: int = 2,
     num_pred: int = 1,
@@ -204,9 +208,11 @@ def train(
     learning_starts: int = 1_000,
     actor_update_freq: int = 5,
     max_episode_steps: int = 10,
+    p_unsafe_reset: float = 0.5,
     # Infra
     device_str: str = "cuda",
     log_freq: int = 500,
+    save_freq: int = 5000,
     seed: int = 42,
 ) -> None:
     init_logging()
@@ -217,28 +223,35 @@ def train(
     device = torch.device(device_str if torch.cuda.is_available() else "cpu")
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(str(output_path / "tb"))
 
     # --- Dataset ---
-    window  = num_hist + num_pred
-    indices = [i * frameskip for i in range(window)]
-    delta_indices = {}
-    for k, v in POLICY_FEATURES.items():
-        if v["dtype"] == "image":
-            delta_indices[k] = indices
-    if "observation.state" in POLICY_FEATURES:
-        delta_indices["observation.state"] = indices
-    if "action" in POLICY_FEATURES:
-        delta_indices["action"] = indices
-
     action_dim  = POLICY_FEATURES["action"]["shape"][-1]
     proprio_dim = POLICY_FEATURES["observation.state"]["shape"][-1]
 
-    dataset = LeRobotDataset(
-        dataset_repo_id,
-        delta_indices=delta_indices,
-        image_transforms=T.Resize((img_size, img_size), antialias=True),
-    )
+    if latent_cache_dir:
+        logging.info(f"Loading cached latents from {latent_cache_dir}")
+        dataset = CachedLatentDataset(
+            cache_dir=latent_cache_dir,
+            num_hist=num_hist,
+            num_pred=num_pred,
+            frameskip=frameskip,
+        )
+    else:
+        window  = num_hist + num_pred
+        indices = [i * frameskip for i in range(window)]
+        delta_indices = {}
+        for k, v in POLICY_FEATURES.items():
+            if v["dtype"] == "image":
+                delta_indices[k] = indices
+        if "observation.state" in POLICY_FEATURES:
+            delta_indices["observation.state"] = indices
+        if "action" in POLICY_FEATURES:
+            delta_indices["action"] = indices
+        dataset = LeRobotDataset(
+            dataset_repo_id,
+            delta_indices=delta_indices,
+            image_transforms=T.Resize((img_size, img_size), antialias=True),
+        )
 
     # --- World model ---
     cfg = DinoWMConfig(
@@ -261,10 +274,12 @@ def train(
 
     wm = _load_world_model(wm_checkpoint, action_dim, proprio_dim, cfg, device)
 
-    # predictor_dim = emb_dim + (action_emb_dim + proprio_emb_dim) * concat_dim
-    from dino_wm.encoder import DinoV2Encoder as _Enc
-    _enc = _Enc(name=encoder_name)
-    predictor_dim = _enc.emb_dim + (action_emb_dim + proprio_emb_dim) * concat_dim
+    if isinstance(dataset, CachedLatentDataset):
+        predictor_dim = dataset.predictor_dim
+    else:
+        from dino_wm.encoder import DinoV2Encoder as _Enc
+        _enc = _Enc(name=encoder_name)
+        predictor_dim = _enc.emb_dim + (action_emb_dim + proprio_emb_dim) * concat_dim
     logging.info(f"predictor_dim = {predictor_dim}  action_dim = {action_dim}")
 
     # --- Gym environment ---
@@ -273,6 +288,7 @@ def train(
         action_dim=action_dim, predictor_dim=predictor_dim,
         num_hist=num_hist, frameskip=frameskip,
         max_episode_steps=max_episode_steps,
+        p_unsafe_reset=p_unsafe_reset,
     )
 
     # --- DDPG policy ---
@@ -292,6 +308,7 @@ def train(
     policy = SafetyDDPG(ddpg_cfg, device)
 
     global_step = 0
+    ep_reward_buffer: deque[float] = deque(maxlen=50)
 
     def _collect_steps(n_steps: int, phase: str) -> None:
         nonlocal global_step
@@ -311,9 +328,6 @@ def train(
             loss_dict = policy.update()
 
             if global_step % log_freq == 0 and loss_dict:
-                for k, v in loss_dict.items():
-                    writer.add_scalar(f"{phase}/{k}", v, global_step)
-                writer.add_scalar(f"{phase}/gamma", policy.gamma, global_step)
                 logging.info(
                     f"[{phase} step {global_step}] "
                     + "  ".join(f"{k}={v:.4f}" for k, v in loss_dict.items())
@@ -321,9 +335,17 @@ def train(
                 )
 
             if done:
-                writer.add_scalar(f"{phase}/episode_reward", ep_reward, global_step)
+                ep_reward_buffer.append(ep_reward)
+                rolling = sum(ep_reward_buffer) / len(ep_reward_buffer)
+                logging.info(
+                    f"[{phase} step {global_step}] episode_reward={ep_reward:.4f}  "
+                    f"mean{len(ep_reward_buffer)}={rolling:.4f}"
+                )
                 ep_reward = 0.0
                 obs, _ = env.reset()
+
+            if phase == "train" and global_step % save_freq == 0:
+                _save_checkpoint(output_path, global_step, policy)
 
     # ===================================================================
     # Phase 1 — Warmup (gamma=0)
@@ -335,14 +357,13 @@ def train(
     # ===================================================================
     # Phase 2 — Training (gamma=gamma_train)
     # ===================================================================
+    ep_reward_buffer.clear()
     policy.gamma = gamma_train
     logging.info(f"=== Training phase: {num_train_epochs} epochs × {train_steps_per_epoch} steps, gamma={gamma_train} ===")
     for epoch in range(1, num_train_epochs + 1):
         logging.info(f"--- Epoch {epoch}/{num_train_epochs} ---")
         _collect_steps(train_steps_per_epoch, phase="train")
-        _save_checkpoint(output_path, epoch, policy)
 
-    writer.close()
     logging.info("Safety DDPG training complete.")
 
 
@@ -356,6 +377,9 @@ def _parse_args() -> argparse.Namespace:
                    help="Path to VWorldModel model.pt (with or without failure_head)")
     p.add_argument("--dataset_repo_id", default="AndrewNoviello/domino-world-v2")
     p.add_argument("--output_dir",      default="outputs/safety_ddpg")
+    p.add_argument("--latent_cache_dir", default="runs/dino_wm_exp_merged/latents",
+                   help="Cached latents to use for env reset (skips encoder). "
+                        "Pass empty string to fall back to LeRobotDataset + wm.encode().")
     p.add_argument("--warmup_steps",    type=int,   default=10_000)
     p.add_argument("--train_steps",     type=int,   default=40_000,
                    help="Steps per training epoch")
@@ -363,6 +387,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--gamma",           type=float, default=0.95)
     p.add_argument("--actor_lr",        type=float, default=1e-4)
     p.add_argument("--critic_lr",       type=float, default=1e-3)
+    p.add_argument("--save_freq",       type=int,   default=5000,
+                   help="Save actor/critic every N train-phase env steps")
+    p.add_argument("--p_unsafe_reset",  type=float, default=0.5,
+                   help="Prob of sampling an unsafe-labeled start window during env reset "
+                        "(counters cache class imbalance, ~84%% safe / 16%% unsafe).")
     p.add_argument("--device",          default="cuda")
     p.add_argument("--seed",            type=int,   default=42)
     return p.parse_args()
@@ -374,12 +403,15 @@ if __name__ == "__main__":
         wm_checkpoint=args.wm_checkpoint,
         dataset_repo_id=args.dataset_repo_id,
         output_dir=args.output_dir,
+        latent_cache_dir=args.latent_cache_dir or None,
         warmup_steps=args.warmup_steps,
         train_steps_per_epoch=args.train_steps,
         num_train_epochs=args.num_epochs,
         gamma_train=args.gamma,
         actor_lr=args.actor_lr,
         critic_lr=args.critic_lr,
+        save_freq=args.save_freq,
+        p_unsafe_reset=args.p_unsafe_reset,
         device_str=args.device,
         seed=args.seed,
     )

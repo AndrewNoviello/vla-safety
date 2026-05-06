@@ -21,8 +21,10 @@ from utils.train_utils import set_seed
 from utils.utils import format_big_number, init_logging
 from utils.wandb_utils import WandBLogger
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 CFG = DinoWMConfig(
-    dataset_repo_id="AndrewNoviello/domino-world-v2",
+    dataset_repo_id=str(REPO_ROOT / "data" / "exp_merged"),
 
     # Temporal window
     # frameskip=3 subsamples 30fps → effective 10fps so consecutive frames
@@ -68,7 +70,7 @@ CFG = DinoWMConfig(
     grad_clip_norm=1.0,
 
     # Logging
-    output_dir="outputs/dino_wm_v2",
+    output_dir="runs/dino_wm_exp_merged",
     log_freq=100,
     save_freq=10_000,
     save_checkpoint=True,
@@ -76,8 +78,8 @@ CFG = DinoWMConfig(
     wandb_project="dino_wm",
     wandb_entity=None,
 
-    # Upload checkpoints to this HuggingFace model repo after training
-    hf_model_repo_id="AndrewNoviello/domino-world-wm-v2",
+    # Checkpoints stay local; flip to a new HF repo if you want to upload.
+    hf_model_repo_id=None,
 )
 
 def _detect_image_key(features: dict) -> str:

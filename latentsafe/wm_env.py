@@ -39,6 +39,7 @@ step(action):
     6. obs = z_pred[:, -1].mean(dim=2)   shape (predictor_dim,)
 """
 
+import logging
 import random
 from typing import Optional
 
@@ -51,6 +52,7 @@ from torchvision.transforms import v2 as T
 from dino_wm.visual_world_model import VWorldModel
 from data.lerobot_dataset import LeRobotDataset
 from data.utils import POLICY_FEATURES
+from latentsafe.cached_latent_dataset import CachedLatentDataset
 from utils.processor_utils import normalize
 
 _IMG_TRANSFORM = T.Resize((224, 224), antialias=True)
@@ -95,7 +97,7 @@ class WorldModelEnv(gym.Env):
     def __init__(
         self,
         wm: VWorldModel,
-        dataset: LeRobotDataset,
+        dataset: LeRobotDataset | CachedLatentDataset,
         device: torch.device,
         action_dim: int,
         predictor_dim: int,
@@ -104,6 +106,7 @@ class WorldModelEnv(gym.Env):
         action_low: float = -1.0,
         action_high: float = 1.0,
         frameskip: int = 3,
+        p_unsafe_reset: float = 0.5,
     ):
         super().__init__()
         assert wm.use_failure_head, "WorldModelEnv requires wm.use_failure_head=True"
@@ -114,8 +117,35 @@ class WorldModelEnv(gym.Env):
         self.num_hist = num_hist
         self.max_episode_steps = max_episode_steps
         self.frameskip = frameskip
-        self._policy_features = dataset.policy_features
-        self._image_key = _detect_image_key(POLICY_FEATURES)
+        self.p_unsafe_reset = p_unsafe_reset
+        self._cached = isinstance(dataset, CachedLatentDataset)
+        if not self._cached:
+            self._policy_features = dataset.policy_features
+            self._image_key = _detect_image_key(POLICY_FEATURES)
+        else:
+            self._safe_starts: list[tuple[int, int]] = []
+            self._unsafe_starts: list[tuple[int, int]] = []
+            for ep, z_ep in dataset._z_per_ep.items():
+                n = int(z_ep.shape[0])
+                max_start = n - num_hist * frameskip - 1
+                if max_start < 0:
+                    continue
+                labels_ep = dataset._fl_per_ep[ep]
+                for s in range(max_start + 1):
+                    last_frame = min(s + (num_hist - 1) * frameskip, n - 1)
+                    if int(labels_ep[last_frame]) == 1:
+                        self._unsafe_starts.append((ep, s))
+                    else:
+                        self._safe_starts.append((ep, s))
+            logging.info(
+                f"WorldModelEnv start pools: safe={len(self._safe_starts)}  "
+                f"unsafe={len(self._unsafe_starts)}  p_unsafe_reset={self.p_unsafe_reset}"
+            )
+            if not self._unsafe_starts:
+                logging.warning(
+                    "No unsafe-labeled start windows in cache — balanced sampling "
+                    "disabled (falling back to uniform safe sampling)"
+                )
 
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf,
@@ -135,6 +165,26 @@ class WorldModelEnv(gym.Env):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _sample_initial_z_from_cache(self) -> torch.Tensor:
+        """Pull a (1, num_hist, P, D) latent window directly from the cache.
+
+        Samples from the safe-start or unsafe-start pool with prob
+        `1 - p_unsafe_reset` and `p_unsafe_reset` respectively, to counter the
+        natural class imbalance in the dataset (cache is ~84% safe / 16% unsafe).
+        Pools are categorised by the failure label of the LAST history frame —
+        i.e., the state the actor first conditions on.
+        """
+        ds = self.dataset
+        if self._unsafe_starts and random.random() < self.p_unsafe_reset:
+            ep, start_idx = random.choice(self._unsafe_starts)
+        else:
+            ep, start_idx = random.choice(self._safe_starts)
+        z_ep = ds._z_per_ep[ep]                              # (T_ep, P, D) fp16
+        n = int(z_ep.shape[0])
+        idxs = [min(start_idx + i * self.frameskip, n - 1) for i in range(self.num_hist)]
+        z_hist = z_ep[idxs].float().unsqueeze(0).to(self.device)   # (1, num_hist, P, D)
+        return z_hist
 
     def _sample_initial_window(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample num_hist consecutive frames from the dataset.
@@ -208,10 +258,12 @@ class WorldModelEnv(gym.Env):
         self._step_count = 0
 
         with torch.no_grad():
-            visual, proprio, action = self._sample_initial_window()
-            obs = {"visual": visual, "proprio": proprio}
-            # Encode initial window → latent history
-            self._z_hist = self.wm.encode(obs, action)   # (1, num_hist, P, D)
+            if self._cached:
+                self._z_hist = self._sample_initial_z_from_cache()
+            else:
+                visual, proprio, action = self._sample_initial_window()
+                obs = {"visual": visual, "proprio": proprio}
+                self._z_hist = self.wm.encode(obs, action)   # (1, num_hist, P, D)
 
         obs_np = self._obs_from_z(self._z_hist)
         return obs_np, {}

@@ -7,7 +7,7 @@ config:
   dof: 6
 
   #Robot connection port
-  port: "/dev/ttyACM1"
+  port: "/dev/ttyACM0"
   calibration: ${oc.env:HF_LEROBOT_CALIBRATION,${hydra:runtime.cwd}/calibration}/robots/so_follower/
 
   id: "follower_arm"

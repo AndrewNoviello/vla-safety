@@ -61,7 +61,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float64MultiArray
 
-from utils.paths import ASSETS
+from utils.paths import REPO_ROOT
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -399,7 +399,7 @@ def parse_args():
     )
     p.add_argument(
         "--stats-path",
-        default=str(ASSETS / "new_stats_format.json"),
+        default=str(REPO_ROOT / "data" / "exp_success_v3_clean" / "meta" / "stats.json"),
         help="Path to dataset stats JSON (state/action normalization).",
     )
     p.add_argument("--pi0-model", default=PI0_MODEL_ID)

@@ -1,26 +1,37 @@
 """Fine-tune the failure_head of a trained VWorldModel.
 
-All parameters except failure_head are frozen. Training uses a margin-based
-ranking loss over three label classes:
-  0 = safe        → score should be < -margin  (head outputs a negative value)
-  1 = unsafe      → score should be > +margin
-  2 = weakly-unsafe → score should be > +gamma*margin  (softer constraint)
+All parameters except failure_head are frozen. Training uses a binary margin
+ranking loss:
+  0 = safe   → score should be < -margin  (head outputs a negative value)
+  1 = unsafe → score should be > +margin
+
+The head is trained on **encoded** latents (output of `model.encode`), paired
+with the frame's `failure_label`. `model.predict_failure(...)` strips the
+action features before pooling, so the classifier scores visual+proprio state
+rather than state-action. The world model's `z_loss` term enforces that
+`model.predict(...)` outputs land in the same encoded-latent space, so the
+head trained here works at deployment in both modes:
+  - live monitor: `predict_failure(model.encode(obs, act))` (single frame).
+  - filter / shielding: `predict_failure(model.predict(model.encode(...)))`.
+
+Cached latents from `scripts/cache_latents.py` are already `model.encode`
+output and need no recompute.
 
 Usage
 -----
-Prepare a dataset that is the same format as the world-model training dataset,
-but with an extra "failure_label" tensor of shape (T,) in {0, 1, 2} per sample.
-Then call:
+The dataset must have a "failure_label" tensor of shape (T,) in {0, 1} per
+sample (the flat-format LeRobotDataset emits this automatically by mapping
+1 - label).
 
     python -m latentsafe.train_classifier \
-        --wm_checkpoint outputs/dino_wm_v2/checkpoints/latest/model.pt \
-        --dataset_repo_id AndrewNoviello/domino-world-v2 \
+        --wm_checkpoint runs/dino_wm_exp_merged/checkpoints/latest/model.pt \
         --steps 10000
 
 Architecture note
 -----------------
 The failure_head was added to VWorldModel with use_failure_head=True.
-It takes the mean-pooled predictor latent (B, T, predictor_dim) → (B, T, 1).
+It takes mean-pooled visual+proprio latents (B, T, encoder_dim + proprio_emb_dim)
+→ (B, T, 1), excluding the action features from the full predictor latent.
 """
 
 import argparse
@@ -41,31 +52,30 @@ from dino_wm.transition import TransitionModel
 from dino_wm.visual_world_model import VWorldModel
 from data.lerobot_dataset import LeRobotDataset
 from data.utils import POLICY_FEATURES, cycle
+from latentsafe.cached_latent_dataset import CachedLatentDataset
 from utils.processor_utils import normalize, to_device
 from utils.utils import init_logging
 
 logging.basicConfig(level=logging.INFO)
 
 # ---------------------------------------------------------------------------
-# Margin-based ranking loss (mirrors reference train_dino_classifier.py)
+# Binary margin-based ranking loss
 # ---------------------------------------------------------------------------
 
 MARGIN = 1.0
-GAMMA = 0.75   # softer margin for weakly-unsafe
 
 
 def fail_loss(scores: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    """Margin ranking loss for three-class failure labels.
+    """Binary margin ranking loss.
 
     Args:
         scores: (N,) predicted failure scores (higher = more unsafe)
-        labels: (N,) integer labels in {0, 1, 2}
+        labels: (N,) integer labels in {0, 1}
     Returns:
         scalar loss
     """
-    safe_mask   = (labels == 0)
+    safe_mask = (labels == 0)
     unsafe_mask = (labels == 1)
-    weak_mask   = (labels == 2)
 
     loss = torch.tensor(0.0, device=scores.device)
     n = 0
@@ -78,11 +88,6 @@ def fail_loss(scores: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     # Unsafe: score > +MARGIN  → loss = max(0, MARGIN - score)
     if unsafe_mask.any():
         loss = loss + F.relu(MARGIN - scores[unsafe_mask]).mean()
-        n += 1
-
-    # Weakly-unsafe: score > +GAMMA*MARGIN  → loss = max(0, GAMMA*MARGIN - score)
-    if weak_mask.any():
-        loss = loss + F.relu(GAMMA * MARGIN - scores[weak_mask]).mean()
         n += 1
 
     return loss / max(n, 1)
@@ -176,6 +181,18 @@ def _freeze_except_failure_head(model: VWorldModel) -> None:
         param.requires_grad = "failure_head" in name
 
 
+def _extract_labels(batch: dict, has_labels: bool, batch_size: int, device) -> torch.Tensor:
+    # Cached path returns failure_label as (B,); LeRobotDataset returns (B,) too
+    # (failure_label isn't in delta_indices, so it's a scalar per sample). Guard
+    # against the historical (B, T) shape just in case anyone re-windows it.
+    if not (has_labels and "failure_label" in batch):
+        return torch.zeros(batch_size, dtype=torch.long, device=device)
+    fl = batch["failure_label"]
+    if fl.dim() == 2:
+        fl = fl[:, -1]
+    return fl.long()
+
+
 # ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
@@ -192,6 +209,8 @@ def train(
     num_workers: int = 4,
     log_freq: int = 100,
     save_freq: int = 1_000,
+    use_cached_latents: bool = False,
+    cached_latents_dir: str = "runs/dino_wm_exp_merged/latents",
     # Config overrides — must match the world model that was trained
     num_hist: int = 2,
     num_pred: int = 1,
@@ -229,31 +248,38 @@ def train(
     )
 
     # Dataset
-    image_key = _detect_image_key(POLICY_FEATURES)
-    window = cfg.num_hist + cfg.num_pred
-    indices = [i * cfg.frameskip for i in range(window)]
-    delta_indices: dict = {}
-    for k, v in POLICY_FEATURES.items():
-        if v["dtype"] == "image":
-            delta_indices[k] = indices
-    if "observation.state" in POLICY_FEATURES:
-        delta_indices["observation.state"] = indices
-    if "action" in POLICY_FEATURES:
-        delta_indices["action"] = indices
-
     action_dim  = POLICY_FEATURES["action"]["shape"][-1]
     proprio_dim = POLICY_FEATURES["observation.state"]["shape"][-1]
 
-    dataset = LeRobotDataset(
-        dataset_repo_id,
-        delta_indices=delta_indices,
-        image_transforms=T.Resize((cfg.img_size, cfg.img_size), antialias=True),
-    )
-    policy_features = dataset.policy_features
+    if use_cached_latents:
+        dataset = CachedLatentDataset(
+            cached_latents_dir,
+            num_hist=cfg.num_hist,
+            num_pred=cfg.num_pred,
+            frameskip=cfg.frameskip,
+        )
+        image_key = None
+        policy_features = None
+    else:
+        image_key = _detect_image_key(POLICY_FEATURES)
+        window = cfg.num_hist + cfg.num_pred
+        indices = [i * cfg.frameskip for i in range(window)]
+        delta_indices: dict = {}
+        for k, v in POLICY_FEATURES.items():
+            if v["dtype"] == "image":
+                delta_indices[k] = indices
+        if "observation.state" in POLICY_FEATURES:
+            delta_indices["observation.state"] = indices
+        if "action" in POLICY_FEATURES:
+            delta_indices["action"] = indices
 
-    # NOTE: The dataset must contain a "failure_label" key with integer labels {0,1,2}.
-    # If it does not, all samples will be treated as safe (label=0) and the classifier
-    # will not learn anything useful. Label your trajectories before running this script.
+        dataset = LeRobotDataset(
+            dataset_repo_id,
+            delta_indices=delta_indices,
+            image_transforms=T.Resize((cfg.img_size, cfg.img_size), antialias=True),
+        )
+        policy_features = dataset.policy_features
+
     has_labels = "failure_label" in (dataset[0] if hasattr(dataset, "__getitem__") else {})
     if not has_labels:
         logging.warning(
@@ -291,27 +317,28 @@ def train(
     for step in range(1, steps + 1):
         # --- Train step ---
         batch = next(train_iter)
-        batch = normalize(batch, dataset.stats, policy_features)
-        batch = to_device(batch, device)
-
-        visual = batch[image_key].float()
-        obs = {"visual": visual, "proprio": batch["observation.state"].float()}
-        act = batch["action"].float()
-
-        with torch.no_grad():
-            z = model.encode(obs, act)                      # (B, T, P, D)
-            z_src = z[:, : cfg.num_hist]
-            z_pred = model.predict(z_src)                   # (B, T, P, D)
-
-        scores = model.predict_failure(z_pred).squeeze(-1)  # (B, T)
-        # Use last predicted timestep for loss
-        scores_last = scores[:, -1]                          # (B,)
-
-        if has_labels and "failure_label" in batch:
-            labels = batch["failure_label"][:, -1].long()   # (B,) — label at last frame
+        if use_cached_latents:
+            batch = to_device(batch, device)
+            z = batch["z"].float()                          # (B, window, P, D)
         else:
-            labels = torch.zeros(scores_last.shape[0], dtype=torch.long, device=device)
+            batch = normalize(batch, dataset.stats, policy_features)
+            batch = to_device(batch, device)
+            visual = batch[image_key].float()
+            obs = {"visual": visual, "proprio": batch["observation.state"].float()}
+            act = batch["action"].float()
+            with torch.no_grad():
+                z = model.encode(obs, act)                  # (B, T, P, D)
 
+        # Score the encoded latent of the last frame in the window. The model's
+        # failure path strips action features before pooling, so this is a
+        # state-only visual+proprio score even though z is action-conditioned.
+        # The dataset aligns failure_label to win[-1], so this index pairs the
+        # head's input with its target. No transition forward is needed —
+        # predict() outputs are only used at deployment time.
+        scores = model.predict_failure(z[:, -1:]).squeeze(-1)  # (B, 1)
+        scores_last = scores[:, -1]                            # (B,)
+
+        labels = _extract_labels(batch, has_labels, scores_last.shape[0], device)
         loss = fail_loss(scores_last, labels)
 
         optimizer.zero_grad()
@@ -328,19 +355,18 @@ def train(
             val_losses = []
             with torch.no_grad():
                 for vbatch in val_loader:
-                    vbatch = normalize(vbatch, dataset.stats, policy_features)
-                    vbatch = to_device(vbatch, device)
-                    vvisual = vbatch[image_key].float()
-                    vobs = {"visual": vvisual, "proprio": vbatch["observation.state"].float()}
-                    vact = vbatch["action"].float()
-                    vz = model.encode(vobs, vact)
-                    vz_src = vz[:, : cfg.num_hist]
-                    vz_pred = model.predict(vz_src)
-                    vscores = model.predict_failure(vz_pred).squeeze(-1)[:, -1]
-                    if has_labels and "failure_label" in vbatch:
-                        vlabels = vbatch["failure_label"][:, -1].long()
+                    if use_cached_latents:
+                        vbatch = to_device(vbatch, device)
+                        vz = vbatch["z"].float()
                     else:
-                        vlabels = torch.zeros(vscores.shape[0], dtype=torch.long, device=device)
+                        vbatch = normalize(vbatch, dataset.stats, policy_features)
+                        vbatch = to_device(vbatch, device)
+                        vvisual = vbatch[image_key].float()
+                        vobs = {"visual": vvisual, "proprio": vbatch["observation.state"].float()}
+                        vact = vbatch["action"].float()
+                        vz = model.encode(vobs, vact)
+                    vscores = model.predict_failure(vz[:, -1:]).squeeze(-1)[:, -1]
+                    vlabels = _extract_labels(vbatch, has_labels, vscores.shape[0], device)
                     val_losses.append(fail_loss(vscores, vlabels).item())
 
             val_loss = float(np.mean(val_losses))
@@ -367,7 +393,8 @@ def train(
 def _parse_args():
     p = argparse.ArgumentParser(description="Fine-tune failure_head of VWorldModel")
     p.add_argument("--wm_checkpoint", required=True, help="Path to VWorldModel model.pt")
-    p.add_argument("--dataset_repo_id", default="AndrewNoviello/domino-world-v2")
+    repo_root = Path(__file__).resolve().parents[1]
+    p.add_argument("--dataset_repo_id", default=str(repo_root / "data" / "exp_merged"))
     p.add_argument("--steps", type=int, default=10_000)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--lr", type=float, default=1e-4)
@@ -376,6 +403,18 @@ def _parse_args():
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--log_freq", type=int, default=100)
     p.add_argument("--save_freq", type=int, default=1_000)
+    p.add_argument(
+        "--use_cached_latents",
+        action="store_true",
+        help="Load pre-computed DINO-WM latents from --cached_latents_dir instead "
+             "of re-encoding images each step. Requires scripts/cache_latents.py "
+             "to have been run first with --store_full_patches.",
+    )
+    p.add_argument(
+        "--cached_latents_dir",
+        default="runs/dino_wm_exp_merged/latents",
+        help="Directory containing episode_NNN.pt + manifest.json from cache_latents.py.",
+    )
     return p.parse_args()
 
 
@@ -392,4 +431,6 @@ if __name__ == "__main__":
         num_workers=args.num_workers,
         log_freq=args.log_freq,
         save_freq=args.save_freq,
+        use_cached_latents=args.use_cached_latents,
+        cached_latents_dir=args.cached_latents_dir,
     )

@@ -39,13 +39,17 @@ class VWorldModel(nn.Module):
         self.action_dim = action_dim * num_action_repeat
         self.emb_dim = self.encoder.emb_dim + (self.action_dim + self.proprio_dim) * concat_dim
 
-        # Failure head: mean-pool predictor output patches → scalar safety score
-        # Input dim equals the predictor output dim (emb_dim when concat_dim=1)
+        # Failure head: score visual+proprio state only. The transition latent
+        # remains action-conditioned, but failure labels are state labels.
+        if concat_dim == 0:
+            self.failure_emb_dim = self.emb_dim
+        else:
+            self.failure_emb_dim = self.emb_dim - self.action_dim
         self.use_failure_head = use_failure_head
         if use_failure_head:
             self.failure_head = nn.Sequential(
-                nn.LayerNorm(self.emb_dim),
-                nn.Linear(self.emb_dim, failure_head_hidden_dim),
+                nn.LayerNorm(self.failure_emb_dim),
+                nn.Linear(self.failure_emb_dim, failure_head_hidden_dim),
                 nn.ReLU(),
                 nn.Linear(failure_head_hidden_dim, 1),
             )
@@ -114,18 +118,27 @@ class VWorldModel(nn.Module):
         proprio = obs["proprio"]  # raw, transition will embed
         return {"visual": visual_embs, "proprio": proprio, "class_token": class_token}
 
+    def failure_state_latent(self, z):
+        """Return the visual+proprio part of z, excluding action features."""
+        if self.action_dim == 0:
+            return z
+        if self.concat_dim == 0:
+            return z[:, :, :-1, :]
+        return z[..., :-self.action_dim]
+
     def predict_failure(self, z):
         """Predict a per-timestep safety score from predictor latents.
 
-        Mirrors the reference failure_head: mean-pool across patches, then MLP → scalar.
+        Removes action features, then mean-pools across tokens before the MLP.
 
         Args:
             z: (B, T, num_patches, predictor_dim)  — output of predict() or encode()
         Returns:
-            scores: (B, T, 1)  — positive = safe, negative = unsafe (before tanh scaling)
+            scores: (B, T, 1)  — higher means more unsafe for the trained failure head
         """
         assert self.use_failure_head, "failure_head not enabled (use_failure_head=False)"
-        pooled = z.mean(dim=2)          # (B, T, predictor_dim)
+        z_state = self.failure_state_latent(z)
+        pooled = z_state.mean(dim=2)    # (B, T, failure_emb_dim)
         return self.failure_head(pooled)  # (B, T, 1)
 
     def predict(self, z):
