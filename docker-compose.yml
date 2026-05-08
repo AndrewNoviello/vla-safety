@@ -1,5 +1,5 @@
 services:
-  vla_safety:
+  vla-safety:
     build: .
     network_mode: host
     privileged: true
