@@ -15,7 +15,7 @@ class Leader(Node):
         self.pub_real = self.create_publisher(msg_type=Float64MultiArray, topic="so101real/joint_command", qos_profile=10)
 
         # self.pub_sim = self.create_publisher(msg_type=Float64MultiArray, topic="so101sim/joint_command", qos_profile=10)        self.clock = Clock()
-        leader_config = SO101LeaderConfig(id="leader_arm", port="/dev/ttyACM0")
+        leader_config = SO101LeaderConfig(id="leader_arm", port="/dev/ttyACM1")
         self.leader = SO101Leader(config=leader_config)
         self.leader.connect(calibrate=False)
         timer_period = 0.025

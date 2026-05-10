@@ -2,14 +2,12 @@
 
 Runs the trained model on held-out dataset samples and reports:
 - Confusion matrix
-- Per-class precision, recall, F1
-- AUC-ROC (safe vs. unsafe, treating weakly-unsafe as unsafe)
+- Precision, recall, F1 (binary safe vs unsafe)
 
 Usage
 -----
     python -m latentsafe.eval_classifier \
         --checkpoint outputs/classifier/classifier_best.pt \
-        --dataset_repo_id AndrewNoviello/domino-world-v2 \
         --num_samples 2000
 """
 
@@ -180,11 +178,8 @@ def evaluate(
             obs    = {"visual": visual, "proprio": batch["observation.state"].float()}
             act    = batch["action"].float()
 
-            z      = model.encode(obs, act)
-            z_src  = z[:, :num_hist]
-            z_pred = model.predict(z_src)
-
-            scores = model.predict_failure(z_pred)[:, -1, 0]   # (B,) last timestep
+            z      = model.encode(obs, act)                       # (B, T, P, D)
+            scores = model.predict_failure(z[:, -1:])[:, -1, 0]   # (B,) last frame
             all_scores.append(scores.cpu())
 
             if "failure_label" in batch:
@@ -202,8 +197,7 @@ def evaluate(
 
     # Predicted class: score > 0 → unsafe (1), score <= 0 → safe (0)
     preds = (all_scores > 0.0).astype(int)
-    # Treat weakly-unsafe (2) as unsafe (1) for binary metrics
-    binary_labels = (all_labels > 0).astype(int)
+    binary_labels = all_labels.astype(int)
 
     # Confusion matrix
     tp = int(((preds == 1) & (binary_labels == 1)).sum())
@@ -224,12 +218,11 @@ def evaluate(
         "tp": tp, "tn": tn, "fp": fp, "fn": fn,
         "n_safe":    int((all_labels == 0).sum()),
         "n_unsafe":  int((all_labels == 1).sum()),
-        "n_weak":    int((all_labels == 2).sum()),
     }
 
     logging.info("=== Failure Classifier Evaluation ===")
     logging.info(f"  Samples:   {len(all_labels)}")
-    logging.info(f"  Labels:    safe={results['n_safe']}  unsafe={results['n_unsafe']}  weak={results['n_weak']}")
+    logging.info(f"  Labels:    safe={results['n_safe']}  unsafe={results['n_unsafe']}")
     logging.info(f"  Accuracy:  {accuracy:.3f}")
     logging.info(f"  Precision: {precision:.3f}")
     logging.info(f"  Recall:    {recall:.3f}")
@@ -241,8 +234,9 @@ def evaluate(
 
 def _parse_args():
     p = argparse.ArgumentParser()
+    repo_root = Path(__file__).resolve().parents[1]
     p.add_argument("--checkpoint",       required=True)
-    p.add_argument("--dataset_repo_id",  default="AndrewNoviello/domino-world-v2")
+    p.add_argument("--dataset_repo_id",  default=str(repo_root / "data" / "exp_merged"))
     p.add_argument("--num_samples",      type=int, default=2000)
     p.add_argument("--batch_size",       type=int, default=64)
     p.add_argument("--device",           default="cuda")

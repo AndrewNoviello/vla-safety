@@ -21,7 +21,7 @@ class SO101RealConfig:
     """Base robot configuration dataclass."""
     name: str = "so101follower"
     dof: int = SO101_DOF
-    port: str = "/dev/ttyACM1"
+    port: str = "/dev/ttyACM0"
     id: str = "follower_v1"
     init_joint_positions: np.ndarray = field(default_factory=lambda: np.zeros(SO101_DOF))
     joint_limits_upper: np.ndarray = field(default_factory=lambda: np.inf * np.ones(SO101_DOF))

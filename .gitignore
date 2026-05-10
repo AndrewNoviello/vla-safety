@@ -24,13 +24,32 @@ log/
 # Local recorder output (scripts/recorder.py)
 data/recordings/
 
+# HF dataset snapshots + merged/filtered exports (scripts/filter_recordings.py, merge_recordings.py, …)
+**/.hf_cache/
+data/exp_*/
+
 # ML training artifacts
 wandb/
+
+# Local experiment dirs at repo root (WM / latent cache / RL checkpoints; see dino_wm/train.py, scripts/cache_latents.py, latentsafe/ddpg.py)
+/runs/
+
+# RL eval videos at repo root (gym RecordVideo in latentsafe/ddpg.py)
+/videos/
+
+# Ad-hoc comparison or rollout MP4s written next to scripts
+/*.mp4
+
 *.pt
 *.pth
 *.ckpt
 *.safetensors
 *.bin
+
+# Tooling caches
+.ruff_cache/
+.mypy_cache/
+.pytype/
 
 # OS / editor
 .DS_Store

@@ -7,7 +7,6 @@ import torch
 from huggingface_hub import snapshot_download
 
 from data.utils import (
-    PARQUET_FEATURES,
     POLICY_FEATURES,
     dataset_to_policy_features,
     hf_transform_to_torch,
@@ -113,7 +112,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         return (batch.data / 255.0).float()
 
     def _load_hf_dataset(self) -> datasets.Dataset:
-        hf_dataset = load_episode_parquets(self.root / "data", features=PARQUET_FEATURES)
+        hf_dataset = load_episode_parquets(self.root / "data")
         hf_dataset.set_transform(hf_transform_to_torch)
         return hf_dataset
 

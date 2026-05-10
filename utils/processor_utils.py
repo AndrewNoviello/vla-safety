@@ -35,8 +35,8 @@ def resize_with_pad_torch(
         height: Target height
         width: Target width
         mode: Interpolation mode ('bilinear', 'nearest', etc.)
-        pad_value: Value for padded regions. If None, uses 0 for uint8, -1.0 for float32.
-            For [0,1] float images, use 0 so that after *2-1 scaling padded regions become -1.
+        pad_value: Value for padded regions. If None, uses 0 for uint8, -1.0 for float32
+            (matches openpi / lerobot training, where padded regions become -3.0 after *2-1).
 
     Returns:
         Resized and padded tensor with same shape format as input
@@ -113,9 +113,7 @@ def resize_images_in_batch(
         else:
             h, w = tensor.shape[1], tensor.shape[2]
         if (h, w) != (height, width):
-            result[key] = resize_with_pad_torch(
-                tensor, height, width, pad_value=0.0
-            )
+            result[key] = resize_with_pad_torch(tensor, height, width)
     return result
 
 

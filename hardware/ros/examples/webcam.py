@@ -12,6 +12,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
 
+DEVICE     = "/dev/video0"
 TOPIC      = "so101real/camera/image"
 RATE_HZ    = 30
 WIDTH      = 640   # downscale from 1920 for policy training
