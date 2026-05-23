@@ -38,6 +38,7 @@ Output layout  (matches the old flat format exactly, + label column):
     frame_index               int64    — 0-based index within episode
 """
 
+import argparse
 import os
 import sys
 import json
@@ -492,11 +493,40 @@ def keyboard_thread(recorder: SingleArmRecorder):
 
 # ── Entry point ────────────────────────────────────────────────────────────
 
-def main():
-    experiment_id = input(f"{BOLD}Enter experiment ID (e.g. exp_01): {RESET}").strip()
-    task_name = (
-        input(f"{BOLD}Task description [{TASK_NAME}]: {RESET}").strip() or TASK_NAME
+def _parse_args():
+    p = argparse.ArgumentParser(
+        description="Record GOOD/BAD-labeled teleop episodes from the SO101 bridge.",
     )
+    p.add_argument(
+        "--experiment-id",
+        default=None,
+        help="Experiment ID (skips the interactive prompt when set).",
+    )
+    p.add_argument(
+        "--task-name",
+        default=None,
+        help="Task description (skips the interactive prompt when set).",
+    )
+    return p.parse_args()
+
+
+def main():
+    args = _parse_args()
+
+    if args.experiment_id:
+        experiment_id = args.experiment_id.strip()
+    else:
+        experiment_id = input(f"{BOLD}Enter experiment ID (e.g. exp_01): {RESET}").strip()
+    if not experiment_id:
+        cprint(f"{RED}Experiment ID is required.{RESET}")
+        sys.exit(1)
+
+    if args.task_name:
+        task_name = args.task_name.strip() or TASK_NAME
+    else:
+        task_name = (
+            input(f"{BOLD}Task description [{TASK_NAME}]: {RESET}").strip() or TASK_NAME
+        )
 
     rclpy.init()
     recorder = SingleArmRecorder(experiment_id, task_name=task_name)

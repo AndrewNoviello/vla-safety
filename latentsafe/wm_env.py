@@ -9,10 +9,9 @@ Architecture mirrors reference Franka_DINOWM_Env
 
 Observation
 -----------
-Mean-pooled patch features from the last predicted latent timestep:
-    shape (predictor_dim,)
-where predictor_dim = encoder_emb_dim + action_emb_dim + proprio_emb_dim
-(for concat_dim=1).
+CLS+proprio state features from the last predicted latent timestep:
+    shape (failure_emb_dim,)
+where failure_emb_dim = encoder_emb_dim + proprio_emb_dim (for concat_dim=1).
 
 Action
 ------
@@ -36,7 +35,7 @@ step(action):
     3. Extract new frame: z_new = z_pred[:, -1:]
     4. Slide history: z_hist = cat(z_hist[:, 1:], z_new)
     5. reward = tanh(2 * failure_score(z_pred[:, -1:]))
-    6. obs = z_pred[:, -1].mean(dim=2)   shape (predictor_dim,)
+    6. obs = CLS+proprio state from z_pred[:, -1]   shape (failure_emb_dim,)
 """
 
 import logging
@@ -234,16 +233,15 @@ class WorldModelEnv(gym.Env):
         )
 
     def _obs_from_z(self, z: torch.Tensor) -> np.ndarray:
-        """Extract mean-pooled patch features from last timestep.
+        """Extract CLS+proprio state features from the last timestep.
 
         Args:
-            z: (1, T, num_patches, predictor_dim)
+            z: (1, T, num_tokens, predictor_dim)
         Returns:
-            np.ndarray of shape (predictor_dim,)
+            np.ndarray of shape (failure_emb_dim,)
         """
-        # z[:, -1] → (1, P, D) → mean over patches → (1, D)
-        pooled = z[:, -1].mean(dim=1)   # (1, D)
-        return pooled.squeeze(0).detach().cpu().numpy().astype(np.float32)
+        state = self.wm.class_token_from_z(z[:, -1:], state_only=True)[:, -1]
+        return state.squeeze(0).detach().cpu().numpy().astype(np.float32)
 
     # ------------------------------------------------------------------
     # Gym interface

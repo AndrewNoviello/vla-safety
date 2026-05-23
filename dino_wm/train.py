@@ -158,6 +158,7 @@ def _build_model(
         mlp_dim=cfg.predictor_mlp_dim,
         dropout=cfg.predictor_dropout,
         emb_dropout=cfg.predictor_emb_dropout,
+        include_cls_token=cfg.include_cls_token,
     )
     if not cfg.train_predictor:
         for p in transition.parameters():

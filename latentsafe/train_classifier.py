@@ -6,9 +6,10 @@ ranking loss:
   1 = unsafe → score should be > +margin
 
 The head is trained on **encoded** latents (output of `model.encode`), paired
-with the frame's `failure_label`. `model.predict_failure(...)` strips the
-action features before pooling, so the classifier scores visual+proprio state
-rather than state-action. The world model's `z_loss` term enforces that
+with the frame's `failure_label`. With CLS-enabled world models,
+`model.predict_failure(...)` reads the current CLS+proprio state features; for
+older patch-only models it falls back to action-stripped patch pooling. The
+world model's `z_loss` term enforces that
 `model.predict(...)` outputs land in the same encoded-latent space, so the
 head trained here works at deployment in both modes:
   - live monitor: `predict_failure(model.encode(obs, act))` (single frame).
@@ -42,7 +43,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.utils.data import DataLoader, Subset, WeightedRandomSampler, random_split
 from torchvision.transforms import v2 as T
 
 from dino_wm.config import DinoWMConfig
@@ -133,6 +134,7 @@ def _build_model(cfg: DinoWMConfig, action_dim: int, proprio_dim: int, checkpoin
         mlp_dim=cfg.predictor_mlp_dim,
         dropout=cfg.predictor_dropout,
         emb_dropout=cfg.predictor_emb_dropout,
+        include_cls_token=cfg.include_cls_token,
     )
 
     decoder = Decoder(
@@ -193,6 +195,117 @@ def _extract_labels(batch: dict, has_labels: bool, batch_size: int, device) -> t
     return fl.long()
 
 
+def _sample_failure_label(dataset, idx: int) -> int | None:
+    """Return the scalar failure label for one dataset sample without recaching."""
+    if isinstance(dataset, Subset):
+        return _sample_failure_label(dataset.dataset, int(dataset.indices[idx]))
+
+    if isinstance(dataset, CachedLatentDataset):
+        ep, local = dataset._index[int(idx)]
+        n = dataset._ep_len[ep]
+        label_idx = max(0, min(n - 1, local + (dataset.window - 1) * dataset.frameskip))
+        return int(dataset._fl_per_ep[ep][label_idx])
+
+    if isinstance(dataset, LeRobotDataset):
+        hf_dataset = dataset.hf_dataset
+        if "failure_label" not in hf_dataset.column_names:
+            return None
+        label = hf_dataset[int(idx)]["failure_label"]
+        if torch.is_tensor(label):
+            return int(label.reshape(-1)[-1].item())
+        return int(label)
+
+    sample = dataset[int(idx)]
+    if "failure_label" not in sample:
+        return None
+    label = sample["failure_label"]
+    if torch.is_tensor(label):
+        if label.numel() == 0:
+            return None
+        label = label.reshape(-1)[-1]
+        return int(label.item())
+    return int(label)
+
+
+def _collect_failure_labels(dataset) -> torch.Tensor | None:
+    labels: list[int] = []
+    for idx in range(len(dataset)):
+        label = _sample_failure_label(dataset, idx)
+        if label is None:
+            return None
+        labels.append(label)
+    return torch.tensor(labels, dtype=torch.long)
+
+
+def _label_counts(labels: torch.Tensor | None) -> dict[str, int]:
+    if labels is None or labels.numel() == 0:
+        return {"safe": 0, "unsafe": 0, "total": 0}
+    safe = int((labels == 0).sum().item())
+    unsafe = int((labels == 1).sum().item())
+    return {"safe": safe, "unsafe": unsafe, "total": int(labels.numel())}
+
+
+def _format_counts(name: str, labels: torch.Tensor | None) -> str:
+    counts = _label_counts(labels)
+    total = max(counts["total"], 1)
+    safe_pct = 100.0 * counts["safe"] / total
+    unsafe_pct = 100.0 * counts["unsafe"] / total
+    return (
+        f"{name}: total={counts['total']} safe={counts['safe']} ({safe_pct:.1f}%) "
+        f"unsafe={counts['unsafe']} ({unsafe_pct:.1f}%)"
+    )
+
+
+def _make_balanced_sampler(labels: torch.Tensor) -> WeightedRandomSampler | None:
+    counts = torch.bincount(labels.clamp_min(0), minlength=2).float()
+    if counts[0] == 0 or counts[1] == 0:
+        logging.warning(
+            "Cannot build balanced sampler because only one class is present: "
+            f"safe={int(counts[0].item())} unsafe={int(counts[1].item())}"
+        )
+        return None
+    class_weights = 1.0 / counts
+    sample_weights = class_weights[labels]
+    return WeightedRandomSampler(
+        weights=sample_weights.double(),
+        num_samples=len(sample_weights),
+        replacement=True,
+    )
+
+
+def _binary_metrics(scores: torch.Tensor, labels: torch.Tensor) -> dict[str, float]:
+    scores = scores.detach().float().cpu()
+    labels = labels.detach().long().cpu()
+    preds = (scores > 0.0).long()
+
+    tp = int(((preds == 1) & (labels == 1)).sum().item())
+    tn = int(((preds == 0) & (labels == 0)).sum().item())
+    fp = int(((preds == 1) & (labels == 0)).sum().item())
+    fn = int(((preds == 0) & (labels == 1)).sum().item())
+
+    precision = tp / max(tp + fp, 1)
+    recall = tp / max(tp + fn, 1)
+    f1 = 2 * precision * recall / max(precision + recall, 1e-8)
+    accuracy = (tp + tn) / max(len(labels), 1)
+
+    safe_scores = scores[labels == 0]
+    unsafe_scores = scores[labels == 1]
+    return {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "tp": tp,
+        "tn": tn,
+        "fp": fp,
+        "fn": fn,
+        "n_safe": int((labels == 0).sum().item()),
+        "n_unsafe": int((labels == 1).sum().item()),
+        "score_safe_mean": float(safe_scores.mean().item()) if safe_scores.numel() else float("nan"),
+        "score_unsafe_mean": float(unsafe_scores.mean().item()) if unsafe_scores.numel() else float("nan"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
@@ -225,8 +338,14 @@ def train(
     predictor_mlp_dim: int = 2048,
     predictor_dropout: float = 0.1,
     failure_head_hidden_dim: int = 256,
+    best_metric: str = "recall",
 ):
     init_logging()
+    valid_best_metrics = {"val_loss", "accuracy", "precision", "recall", "f1"}
+    if best_metric not in valid_best_metrics:
+        raise ValueError(
+            f"best_metric must be one of {sorted(valid_best_metrics)}, got {best_metric!r}"
+        )
     device = torch.device(device_str if torch.cuda.is_available() else "cpu")
 
     cfg = DinoWMConfig(
@@ -257,6 +376,7 @@ def train(
             num_hist=cfg.num_hist,
             num_pred=cfg.num_pred,
             frameskip=cfg.frameskip,
+            include_cls_token=cfg.include_cls_token,
         )
         image_key = None
         policy_features = None
@@ -286,13 +406,33 @@ def train(
             "Dataset does not contain 'failure_label'. All samples will be treated as "
             "safe (label=0). The failure head will not learn to distinguish safe/unsafe."
         )
+        if best_metric != "val_loss":
+            logging.warning(
+                f"best_metric={best_metric!r} requires labels; falling back to 'val_loss'."
+            )
+            best_metric = "val_loss"
 
     n_val = max(1, int(len(dataset) * val_frac))
     n_train = len(dataset) - n_val
     train_ds, val_ds = random_split(dataset, [n_train, n_val])
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              num_workers=num_workers, drop_last=True)
+    full_labels = _collect_failure_labels(dataset) if has_labels else None
+    train_labels = _collect_failure_labels(train_ds) if has_labels else None
+    val_labels = _collect_failure_labels(val_ds) if has_labels else None
+
+    if has_labels:
+        logging.info("Class balance: " + _format_counts("full", full_labels))
+        logging.info("Class balance: " + _format_counts("train", train_labels))
+        logging.info("Class balance: " + _format_counts("val", val_labels))
+
+    train_sampler = _make_balanced_sampler(train_labels) if train_labels is not None else None
+    if train_sampler is not None:
+        logging.info("Using WeightedRandomSampler for class-balanced training batches.")
+    else:
+        logging.info("Using shuffled training batches without class-balanced sampling.")
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=train_sampler is None,
+                              sampler=train_sampler, num_workers=num_workers, drop_last=True)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
                               num_workers=num_workers, drop_last=False)
 
@@ -312,6 +452,7 @@ def train(
     output_path.mkdir(parents=True, exist_ok=True)
 
     best_val_loss = float("inf")
+    best_metric_value = float("inf") if best_metric == "val_loss" else -float("inf")
     train_iter = cycle(train_loader)
 
     for step in range(1, steps + 1):
@@ -347,12 +488,18 @@ def train(
 
         # --- Logging ---
         if step % log_freq == 0:
-            logging.info(f"[step {step}/{steps}] train_loss={loss.item():.4f}")
+            unsafe_frac = float((labels == 1).float().mean().item()) if has_labels else 0.0
+            logging.info(
+                f"[step {step}/{steps}] train_loss={loss.item():.4f} "
+                f"batch_unsafe_frac={unsafe_frac:.3f}"
+            )
 
         # --- Validation ---
         if step % save_freq == 0:
             model.failure_head.eval()
             val_losses = []
+            val_scores = []
+            val_targets = []
             with torch.no_grad():
                 for vbatch in val_loader:
                     if use_cached_latents:
@@ -368,18 +515,51 @@ def train(
                     vscores = model.predict_failure(vz[:, -1:]).squeeze(-1)[:, -1]
                     vlabels = _extract_labels(vbatch, has_labels, vscores.shape[0], device)
                     val_losses.append(fail_loss(vscores, vlabels).item())
+                    if has_labels:
+                        val_scores.append(vscores.detach().cpu())
+                        val_targets.append(vlabels.detach().cpu())
 
             val_loss = float(np.mean(val_losses))
-            logging.info(f"[step {step}] val_loss={val_loss:.4f}")
+            metrics = {}
+            if val_scores and val_targets:
+                metrics = _binary_metrics(torch.cat(val_scores), torch.cat(val_targets))
+                logging.info(
+                    f"[step {step}] val_loss={val_loss:.4f} "
+                    f"acc={metrics['accuracy']:.3f} precision={metrics['precision']:.3f} "
+                    f"recall={metrics['recall']:.3f} f1={metrics['f1']:.3f} "
+                    f"safe={metrics['n_safe']} unsafe={metrics['n_unsafe']} "
+                    f"score_safe_mean={metrics['score_safe_mean']:.3f} "
+                    f"score_unsafe_mean={metrics['score_unsafe_mean']:.3f} "
+                    f"tp={metrics['tp']} tn={metrics['tn']} fp={metrics['fp']} fn={metrics['fn']}"
+                )
+            else:
+                logging.info(f"[step {step}] val_loss={val_loss:.4f}")
 
             ckpt = output_path / f"classifier_step{step:06d}.pt"
             torch.save(model.state_dict(), ckpt)
 
-            if val_loss < best_val_loss:
+            if best_metric == "val_loss":
+                metric_value = val_loss
+                improved = metric_value < best_metric_value
+            else:
+                metric_value = float(metrics.get(best_metric, -float("inf")))
+                improved = (
+                    metric_value > best_metric_value
+                    or (
+                        abs(metric_value - best_metric_value) <= 1e-8
+                        and val_loss < best_val_loss
+                    )
+                )
+
+            if improved:
+                best_metric_value = metric_value
                 best_val_loss = val_loss
                 best = output_path / "classifier_best.pt"
                 torch.save(model.state_dict(), best)
-                logging.info(f"  → New best val_loss={best_val_loss:.4f}, saved to {best}")
+                logging.info(
+                    f"  -> New best {best_metric}={best_metric_value:.4f} "
+                    f"(val_loss={best_val_loss:.4f}), saved to {best}"
+                )
 
             model.failure_head.train()
 
@@ -415,6 +595,13 @@ def _parse_args():
         default="runs/dino_wm_exp_merged/latents",
         help="Directory containing episode_NNN.pt + manifest.json from cache_latents.py.",
     )
+    p.add_argument(
+        "--best_metric",
+        choices=["val_loss", "accuracy", "precision", "recall", "f1"],
+        default="recall",
+        help="Validation metric used for classifier_best.pt. Non-loss metrics use "
+             "higher-is-better with val_loss as a tie-breaker.",
+    )
     return p.parse_args()
 
 
@@ -433,4 +620,5 @@ if __name__ == "__main__":
         save_freq=args.save_freq,
         use_cached_latents=args.use_cached_latents,
         cached_latents_dir=args.cached_latents_dir,
+        best_metric=args.best_metric,
     )

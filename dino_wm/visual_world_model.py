@@ -38,11 +38,14 @@ class VWorldModel(nn.Module):
         self.proprio_dim = proprio_dim * num_proprio_repeat
         self.action_dim = action_dim * num_action_repeat
         self.emb_dim = self.encoder.emb_dim + (self.action_dim + self.proprio_dim) * concat_dim
+        self.include_cls_token = getattr(self.transition, "include_cls_token", False)
+        self.num_visual_patches = getattr(self.transition, "num_visual_patches", None)
+        self.cls_token_index = getattr(self.transition, "cls_token_index", None)
 
-        # Failure head: score visual+proprio state only. The transition latent
-        # remains action-conditioned, but failure labels are state labels.
+        # Failure head: score visual+proprio state only. With CLS enabled, the
+        # head reads the CLS state token instead of a mean-pooled patch state.
         if concat_dim == 0:
-            self.failure_emb_dim = self.emb_dim
+            self.failure_emb_dim = self.encoder.emb_dim if self.include_cls_token else self.emb_dim
         else:
             self.failure_emb_dim = self.emb_dim - self.action_dim
         self.use_failure_head = use_failure_head
@@ -95,10 +98,11 @@ class VWorldModel(nn.Module):
     def encode(self, obs, act):
         """
         input :  obs (dict): "visual", "proprio", (b, num_frames, 3, img_size, img_size)
-        output:    z (tensor): (b, num_frames, num_patches, emb_dim)
+        output:    z (tensor): (b, num_frames, num_tokens, emb_dim)
         """
         z_dct = self.encode_obs(obs)
-        z = self.transition.build_z(z_dct["visual"], z_dct["proprio"], act)
+        class_token = z_dct["class_token"] if self.include_cls_token else None
+        z = self.transition.build_z(z_dct["visual"], z_dct["proprio"], act, class_token)
         return z
 
     def encode_obs(self, obs):
@@ -118,6 +122,25 @@ class VWorldModel(nn.Module):
         proprio = obs["proprio"]  # raw, transition will embed
         return {"visual": visual_embs, "proprio": proprio, "class_token": class_token}
 
+    def patch_tokens_from_z(self, z, state_only=False):
+        """Return spatial patch tokens, excluding the optional CLS token."""
+        start = 1 if self.include_cls_token else 0
+        if self.concat_dim == 0:
+            return z[:, :, start:-2, :]
+        if state_only and self.action_dim > 0:
+            return z[:, :, start:, : -self.action_dim]
+        return z[:, :, start:, :]
+
+    def class_token_from_z(self, z, state_only=True):
+        """Return CLS+proprio state features, or pooled patches if CLS is off."""
+        if not self.include_cls_token:
+            z_state = self.failure_state_latent(z)
+            return z_state.mean(dim=2)
+        cls = z[:, :, 0, :]
+        if state_only and self.concat_dim == 1 and self.action_dim > 0:
+            cls = cls[..., : -self.action_dim]
+        return cls
+
     def failure_state_latent(self, z):
         """Return the visual+proprio part of z, excluding action features."""
         if self.action_dim == 0:
@@ -129,17 +152,17 @@ class VWorldModel(nn.Module):
     def predict_failure(self, z):
         """Predict a per-timestep safety score from predictor latents.
 
-        Removes action features, then mean-pools across tokens before the MLP.
+        Uses the CLS+proprio state token when available; otherwise removes
+        action features and mean-pools across tokens.
 
         Args:
-            z: (B, T, num_patches, predictor_dim)  — output of predict() or encode()
+            z: (B, T, num_tokens, predictor_dim)  — output of predict() or encode()
         Returns:
             scores: (B, T, 1)  — higher means more unsafe for the trained failure head
         """
         assert self.use_failure_head, "failure_head not enabled (use_failure_head=False)"
-        z_state = self.failure_state_latent(z)
-        pooled = z_state.mean(dim=2)    # (B, T, failure_emb_dim)
-        return self.failure_head(pooled)  # (B, T, 1)
+        state = self.class_token_from_z(z, state_only=True)
+        return self.failure_head(state)  # (B, T, 1)
 
     def predict(self, z):
         """
@@ -177,10 +200,10 @@ class VWorldModel(nn.Module):
         output: z_obs (dict), z_act (tensor)
         """
         if self.concat_dim == 0:
-            z_visual, z_proprio, z_act = z[:, :, :-2, :], z[:, :, -2, :], z[:, :, -1, :]
+            z_visual, z_proprio, z_act = self.patch_tokens_from_z(z), z[:, :, -2, :], z[:, :, -1, :]
         elif self.concat_dim == 1:
             z_visual, z_proprio, z_act = (
-                z[..., : -(self.proprio_dim + self.action_dim)],
+                self.patch_tokens_from_z(z)[..., : -(self.proprio_dim + self.action_dim)],
                 z[..., -(self.proprio_dim + self.action_dim) : -self.action_dim],
                 z[..., -self.action_dim :],
             )
@@ -212,13 +235,16 @@ class VWorldModel(nn.Module):
         loss_components["decoder_loss_pred"] = recon_loss_pred
 
         if self.concat_dim == 0:
-            z_visual_loss = self.emb_criterion(z_pred[:, :, :-2, :], z_tgt[:, :, :-2, :].detach())
+            z_visual_loss = self.emb_criterion(
+                self.patch_tokens_from_z(z_pred),
+                self.patch_tokens_from_z(z_tgt).detach(),
+            )
             z_proprio_loss = self.emb_criterion(z_pred[:, :, -2, :], z_tgt[:, :, -2, :].detach())
             z_loss = self.emb_criterion(z_pred[:, :, :-1, :], z_tgt[:, :, :-1, :].detach())
         elif self.concat_dim == 1:
             z_visual_loss = self.emb_criterion(
-                z_pred[:, :, :, : -(self.proprio_dim + self.action_dim)],
-                z_tgt[:, :, :, : -(self.proprio_dim + self.action_dim)].detach(),
+                self.patch_tokens_from_z(z_pred)[..., : -(self.proprio_dim + self.action_dim)],
+                self.patch_tokens_from_z(z_tgt)[..., : -(self.proprio_dim + self.action_dim)].detach(),
             )
             z_proprio_loss = self.emb_criterion(
                 z_pred[:, :, :, -(self.proprio_dim + self.action_dim) : -self.action_dim],
@@ -229,10 +255,20 @@ class VWorldModel(nn.Module):
                 z_tgt[:, :, :, : -self.action_dim].detach(),
             )
 
+        z_cls_loss = (
+            self.emb_criterion(
+                self.class_token_from_z(z_pred, state_only=True),
+                self.class_token_from_z(z_tgt, state_only=True).detach(),
+            )
+            if self.include_cls_token
+            else z_visual_loss.new_tensor(0.0)
+        )
+
         loss = loss + z_loss
         loss_components["z_loss"] = z_loss
         loss_components["z_visual_loss"] = z_visual_loss
         loss_components["z_proprio_loss"] = z_proprio_loss
+        loss_components["z_cls_loss"] = z_cls_loss
 
         obs_reconstructed = self.decode(z.detach())
         visual_reconstructed = obs_reconstructed["visual"]
