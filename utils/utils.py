@@ -3,7 +3,6 @@ import importlib.metadata
 import json
 import logging
 import os
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
@@ -11,7 +10,6 @@ from typing import Any, TypeVar
 import numpy as np
 import torch
 from accelerate import Accelerator
-from datasets.utils.logging import disable_progress_bar, enable_progress_bar
 
 JsonLike = str | int | float | bool | None | list["JsonLike"] | dict[str, "JsonLike"] | tuple["JsonLike", ...]
 T = TypeVar("T", bound=JsonLike)
@@ -223,13 +221,3 @@ def format_big_number(num, precision=0):
 
 def has_method(cls: object, method_name: str) -> bool:
     return hasattr(cls, method_name) and callable(getattr(cls, method_name))
-
-
-@contextmanager
-def suppress_progress_bars():
-    """Context manager to suppress HuggingFace datasets progress bars."""
-    disable_progress_bar()
-    try:
-        yield
-    finally:
-        enable_progress_bar()

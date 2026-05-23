@@ -32,10 +32,10 @@ data/exp_*/
 # ML training artifacts
 wandb/
 
-# Local experiment dirs at repo root (WM / latent cache / RL checkpoints; see dino_wm/train.py, scripts/cache_latents.py, latentsafe/ddpg.py)
+# Local experiment dirs at repo root (WM / latent cache / RL checkpoints; see dino_wm/train.py, scripts/cache_latents.py, latentsafe/train_safety_ddpg.py)
 /runs/
 
-# RL eval videos at repo root (gym RecordVideo in latentsafe/ddpg.py)
+# RL eval videos at repo root (gym RecordVideo from RL training)
 /videos/
 
 # Ad-hoc comparison or rollout MP4s written next to scripts

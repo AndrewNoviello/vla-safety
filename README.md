@@ -198,7 +198,6 @@ All executable scripts live in [scripts/](scripts/). The table below is the full
 | [convert_to_lerobot_v3.py](scripts/convert_to_lerobot_v3.py) | Dataset | Flat format → LeRobot v3 chunked layout (§9.4). |
 | [push_dataset_to_hub.py](scripts/push_dataset_to_hub.py) | Dataset | Upload a dataset folder to Hugging Face Hub (§9.5). |
 | [overlay_safety.py](scripts/overlay_safety.py) | Analysis | Burn classifier scores onto episode videos (§11). |
-| [smoke_cls_world_model.py](scripts/smoke_cls_world_model.py) | Dev | Fast tensor-shape smoke test for CLS-token world model (§11.3). |
 
 ## 7. Hardware nodes
 
@@ -473,14 +472,45 @@ python scripts/safety_monitor.py \
 
 Wrapped by [launch/safety_monitor.launch.py](launch/safety_monitor.launch.py) (menu item 4), which also brings up the hardware bridge and teleop so you can drive the arm and watch the readout in one shell.
 
-### 11.3 [scripts/smoke_cls_world_model.py](scripts/smoke_cls_world_model.py)
+### 11.3 [dino_wm/test.py](dino_wm/test.py)
 
-Developer smoke test for the CLS-token world-model tensor plumbing. Uses dummy encoder/decoder modules (no DINOv2 weights) to verify that `encode`, `predict`, `decode`, and `predict_failure` produce the expected shapes when `include_cls_token=True`. Run after changing [dino_wm/](dino_wm/) model code:
+Visual sanity check after world-model training. Loads one episode from the dataset (using `CFG` in [dino_wm/train.py](dino_wm/train.py)), seeds the WM with the first `num_hist` real frames, then autoregresses using only the recorded actions — future real images are never fed back in. Writes a side-by-side MP4: **left** = dataset frames, **right** = WM reconstruction (seed frames) then pure prediction.
 
 ```bash
-python scripts/smoke_cls_world_model.py
-# prints: CLS world-model smoke test passed.
+python -m dino_wm.test \
+    --checkpoint runs/dino_wm_exp_merged/checkpoints/latest/model.pt \
+    --episode 0 \
+    --output wm_comparison_ep000.mp4
 ```
+
+Useful flags: `--hf-repo` (HF model repo if not loading a local `.pt`), `--save-frames` (also dump PNGs), `--device cuda|cpu`. Edit `CFG.dataset_repo_id` and related fields in `dino_wm/train.py` if your dataset differs from the training run.
+
+### 11.4 [latentsafe/eval_classifier.py](latentsafe/eval_classifier.py)
+
+Offline evaluation of a saved failure-classifier checkpoint on held-out dataset windows. Reports accuracy, precision, recall, F1, and a confusion matrix (score > 0 → predicted unsafe). [latentsafe/train_classifier.py](latentsafe/train_classifier.py) already logs validation metrics during training; use this to re-score a checkpoint on more samples or a different dataset without retraining.
+
+```bash
+python -m latentsafe.eval_classifier \
+    --checkpoint outputs/classifier/classifier_best.pt \
+    --dataset_repo_id <your-hf-username>/<your-dataset> \
+    --num_samples 2000
+```
+
+Useful flags: `--batch_size` (default `64`), `--device`. Requires `failure_label` in the dataset for metrics; otherwise only score mean/std are printed.
+
+### 11.5 [latentsafe/eval_safety.py](latentsafe/eval_safety.py)
+
+Closed-loop evaluation of the trained safety actor inside [latentsafe/wm_env.py](latentsafe/wm_env.py) (frozen world model as simulator). Rolls out the safety DDPG actor for `--num_episodes`, then repeats with random actions as a baseline. Reports mean episode reward, fraction of steps with predicted unsafe failure score, and success rate (episodes with no unsafe steps). Run after [latentsafe/train_safety_ddpg.py](latentsafe/train_safety_ddpg.py) to sanity-check a checkpoint before deploy.
+
+```bash
+python -m latentsafe.eval_safety \
+    --wm_checkpoint outputs/dino_wm_v2/checkpoints/latest/model.pt \
+    --actor_checkpoint outputs/safety_ddpg/checkpoints/epoch_0015/actor.pt \
+    --dataset_repo_id <your-hf-username>/<your-dataset> \
+    --num_episodes 100
+```
+
+Useful flags: `--device`. Only the actor is evaluated here (the critic is used at deploy time for gating, not in this script).
 
 ## 12. Deployment
 

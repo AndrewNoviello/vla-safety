@@ -44,11 +44,6 @@ dependencies = [
 peft = [
     "peft>=0.13.0",
 ]
-dev = [
-    "pytest>=8.1.0",
-    "pytest-timeout>=2.4.0",
-    "pre-commit>=3.7.0",
-]
 
 [project.scripts]
 so101-robot-node = "hardware.ros.scripts.robot_node_launcher:main"
