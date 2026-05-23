@@ -1,6 +1,5 @@
 """
 USB Camera Node
-
 Publishes frames from a USB camera as sensor_msgs/Image on:
   so101real/camera/image   (raw BGR, 30 Hz by default)
 
@@ -24,7 +23,6 @@ RATE_HZ    = 30
 WIDTH      = 640   # downscale from 1920 for policy training
 HEIGHT     = 480
 
-
 class CameraNode(Node):
 
     def __init__(self, device: str, topic: str, rate_hz: float, width: int, height: int):
@@ -44,7 +42,6 @@ class CameraNode(Node):
         # request native resolution; we'll downscale in software
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1920)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-
         qos = QoSProfile(
             depth=2,
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -55,7 +52,6 @@ class CameraNode(Node):
         self.get_logger().info(
             f"Camera node publishing {width}x{height} @ {rate_hz}hz from {device} -> {topic}"
         )
-
     def _tick(self):
         ret, frame = self.cap.read()
         if not ret:
@@ -75,7 +71,6 @@ class CameraNode(Node):
         msg.step         = self._width * 3
         msg.data         = frame.tobytes()
         self._pub.publish(msg)
-
     def destroy_node(self):
         self.cap.release()
         super().destroy_node()
@@ -110,6 +105,7 @@ def main():
         if rclpy.ok():
             rclpy.shutdown()
 
-
 if __name__ == "__main__":
     main()
+
+
