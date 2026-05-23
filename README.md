@@ -21,7 +21,6 @@ configs/       Hydra configs for the hardware bridge
 calibration/   SO101 follower / leader calibration files (see §13.3)
 data/          LeRobot dataset loaders + augmentation; recordings land under data/recordings/
 utils/         Shared utilities, paths, types, training helpers
-assets/        Reference LeRobot v3 stats (see §13.2); not wired into deploy defaults
 ```
 
 See **§13** for where stats, checkpoints, recordings, and calibration files go.
@@ -562,8 +561,7 @@ The repo uses a few recurring directory conventions. You do not need to create m
 ├── outputs/                             ← typical classifier + safety-DDPG output
 │   ├── classifier/classifier_best.pt
 │   └── safety_ddpg/checkpoints/step_NNNNNNNN/{actor,critic}.pt
-├── logs/hardware-<timestamp>.log        ← background hardware from launch menu pipeline 3
-└── assets/stats.json                    ← reference LeRobot v3-format stats (not used by default)
+└── logs/hardware-<timestamp>.log        ← background hardware from launch menu pipeline 3
 ```
 
 | Artifact | Default location | Created by | Used by |

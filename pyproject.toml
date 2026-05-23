@@ -44,11 +44,6 @@ dependencies = [
 peft = [
     "peft>=0.13.0",
 ]
-server = [
-    "fastapi>=0.100.0",
-    "uvicorn[standard]>=0.20.0",
-    "pydantic>=2.0.0",
-]
 dev = [
     "pytest>=8.1.0",
     "pytest-timeout>=2.4.0",
@@ -66,4 +61,4 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["hardware*", "pi0*", "dino_wm*", "latentsafe*", "data*", "utils*", "scripts*"]
-exclude = ["configs*", "calibration*", "assets*", "outputs*", "tests*"]
+exclude = ["configs*", "calibration*", "outputs*", "tests*"]
