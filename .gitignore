@@ -20,6 +20,7 @@ multirun/
 
 # ROS 2 runtime logs
 log/
+logs/
 
 # Local recorder output (scripts/recorder.py)
 data/recordings/
@@ -55,7 +56,4 @@ wandb/
 .DS_Store
 
 # Claude Code (user-specific)
-.claude/settings.local.json
-__pycache__/
-*.py[cod]
-.claude
+.claude/
