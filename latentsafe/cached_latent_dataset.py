@@ -6,8 +6,8 @@ on every sample, load per-frame `z` tensors written by `scripts/cache_latents.py
 and stack them into the same windowed batches.
 
 Each `episode_NNN.pt` contains:
-    z:             (T_ep, P, D)  fp16   — full-patch latent per frame
-    z_mean:        (T_ep, D)     fp16   — pooled latent (unused here)
+    z:             (T_ep, tokens, D) fp16 — full latent per frame
+    z_mean:        (T_ep, D)         fp16 — patch-pooled latent (unused here)
     failure_label: (T_ep,)       int8   — 1 = unsafe, 0 = safe
     frame_index:   (T_ep,)       int64
     index:         (T_ep,)       int64
@@ -34,6 +34,7 @@ class CachedLatentDataset(torch.utils.data.Dataset):
         num_hist: int,
         num_pred: int,
         frameskip: int,
+        include_cls_token: bool | None = None,
     ):
         super().__init__()
         self.cache_dir = Path(cache_dir)
@@ -52,11 +53,24 @@ class CachedLatentDataset(torch.utils.data.Dataset):
                 f"Cache at {self.cache_dir} was built without --store_full_patches. "
                 "Re-run cache_latents.py with --store_full_patches to use this loader."
             )
+        cache_has_cls = bool(manifest.get("include_cls_token", False))
+        if include_cls_token is not None and cache_has_cls != include_cls_token:
+            expected = "CLS-enabled" if include_cls_token else "patch-only"
+            actual = "CLS-enabled" if cache_has_cls else "patch-only"
+            raise ValueError(
+                f"Cache at {self.cache_dir} is {actual}, but this run expects "
+                f"{expected} latents. Re-run scripts/cache_latents.py with a "
+                "matching world-model checkpoint."
+            )
 
         self.num_hist = int(num_hist)
         self.num_pred = int(num_pred)
         self.frameskip = int(frameskip)
         self.window = self.num_hist + self.num_pred
+        self.cache_format_version = int(manifest.get("cache_format_version", 1))
+        self.include_cls_token = cache_has_cls
+        self.cls_token_index = manifest.get("cls_token_index")
+        self.num_visual_patches = manifest.get("num_visual_patches")
 
         episode_paths = sorted(self.cache_dir.glob("episode_*.pt"))
         if not episode_paths:
@@ -86,10 +100,14 @@ class CachedLatentDataset(torch.utils.data.Dataset):
         self.num_frames = len(self._index)
         self.num_episodes = len(self._z_per_ep)
         self.predictor_dim = D_dim
+        self.num_tokens = P_dim
         self.num_patches = P_dim
+        if self.num_visual_patches is None:
+            self.num_visual_patches = P_dim - (1 if self.include_cls_token else 0)
         logger.info(
             f"CachedLatentDataset: {self.num_frames} frames across "
-            f"{self.num_episodes} episodes, P={P_dim} D={D_dim}, "
+            f"{self.num_episodes} episodes, tokens={P_dim} D={D_dim}, "
+            f"include_cls_token={self.include_cls_token}, "
             f"window={self.window} (num_hist={self.num_hist}+num_pred={self.num_pred}), "
             f"frameskip={self.frameskip}"
         )

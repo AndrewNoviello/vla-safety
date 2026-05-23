@@ -1,7 +1,7 @@
 """Cache DINO-WM latents for the entire training dataset.
 
 For each frame in the dataset, computes z = model.encode(obs, act) with T=1
-and writes per-episode .pt files containing both full patch latents and
+and writes per-episode .pt files containing full token latents and patch-only
 mean-pooled latents, plus failure_label and frame_index metadata. Streams
 writes per-episode so peak memory is one episode worth of latents.
 
@@ -149,10 +149,11 @@ def cache_latents(
         obs = {"visual": visual, "proprio": proprio}
 
         with torch.no_grad():
-            z = model.encode(obs, act)  # (B, 1, P, D)
+            z = model.encode(obs, act)  # (B, 1, num_tokens, D)
 
-        z = z.squeeze(1)             # (B, P, D)
-        z_mean = z.mean(dim=-2)      # (B, D)
+        patch_z = model.patch_tokens_from_z(z)  # exclude CLS if present
+        z = z.squeeze(1)                        # (B, num_tokens, D)
+        z_mean = patch_z.squeeze(1).mean(dim=-2)  # (B, D)
         if P_dim is None:
             P_dim, D_dim = int(z.shape[1]), int(z.shape[2])
 
@@ -223,12 +224,17 @@ def cache_latents(
             )
 
     manifest = {
+        "cache_format_version": 2,
         "wm_checkpoint": str(Path(wm_checkpoint).resolve()),
         "dataset_repo_id": dataset_repo_id,
         "num_frames": total_cached,
         "num_episodes": len(flushed),
         "predictor_dim": D_dim,
         "num_patches": P_dim,
+        "num_tokens": P_dim,
+        "num_visual_patches": getattr(model, "num_visual_patches", None),
+        "include_cls_token": getattr(model, "include_cls_token", False),
+        "cls_token_index": getattr(model, "cls_token_index", None),
         "store_full_patches": store_full_patches,
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -257,7 +263,7 @@ def _parse_args():
         "--store_full_patches",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Store full per-patch z (default True). Pass --no-store_full_patches "
+        help="Store full per-token z (default True). Pass --no-store_full_patches "
              "to skip the ~13 GB tensor and only cache pooled z_mean.",
     )
     p.add_argument("--batch_size", type=int, default=32)

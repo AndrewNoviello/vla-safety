@@ -102,6 +102,18 @@ class ActionQueue:
                 return None
             return self.original_queue[self.last_index :]
 
+    def clear(self) -> None:
+        """Drop both queues and reset the consumption index.
+
+        Useful when the controller decides the current plan is invalid
+        (e.g. a safety filter override) and a fresh, unguided chunk
+        should be generated.
+        """
+        with self.lock:
+            self.queue = None
+            self.original_queue = None
+            self.last_index = 0
+
     def merge(
         self,
         original_actions: Tensor,

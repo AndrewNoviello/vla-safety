@@ -33,6 +33,9 @@ class DinoWMConfig:
     # 1 → concatenate them to the visual feature dimension (default, no constraint
     #     on action_emb_dim / proprio_emb_dim).
     concat_dim: int = 1
+    # Add a DINO class-token slot to the world-model latent so rollout can
+    # predict a global visual state token alongside spatial patch tokens.
+    include_cls_token: bool = True
 
     train_predictor: bool = True
     predictor_depth: int = 6

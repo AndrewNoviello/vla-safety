@@ -50,6 +50,7 @@ def _load_wm(checkpoint: str, action_dim: int, proprio_dim: int, cfg: DinoWMConf
         num_proprio_repeat=cfg.num_proprio_repeat, num_action_repeat=cfg.num_action_repeat,
         depth=cfg.predictor_depth, heads=cfg.predictor_heads,
         mlp_dim=cfg.predictor_mlp_dim, dropout=0.0, emb_dropout=0.0,
+        include_cls_token=cfg.include_cls_token,
     )
     decoder = Decoder(
         channel=cfg.decoder_channel, n_res_block=cfg.decoder_n_res_block,
@@ -178,17 +179,16 @@ def evaluate(
 
     wm = _load_wm(wm_checkpoint, action_dim, proprio_dim, cfg, device)
 
-    enc_tmp       = DinoV2Encoder(name=encoder_name)
-    predictor_dim = enc_tmp.emb_dim + (action_emb_dim + proprio_emb_dim) * concat_dim
+    obs_dim = wm.failure_emb_dim
 
     env = WorldModelEnv(
         wm=wm, dataset=dataset, device=device,
-        action_dim=action_dim, predictor_dim=predictor_dim,
+        action_dim=action_dim, predictor_dim=obs_dim,
         num_hist=num_hist, max_episode_steps=max_episode_steps, frameskip=frameskip,
     )
 
     # --- Safety DDPG actor ---
-    actor = SafetyActor(obs_dim=predictor_dim, action_dim=action_dim).to(device)
+    actor = SafetyActor(obs_dim=obs_dim, action_dim=action_dim).to(device)
     actor.load_state_dict(torch.load(actor_checkpoint, map_location=device))
     actor.eval()
 

@@ -2,11 +2,15 @@
 USB Camera Node
 
 Publishes frames from a USB camera as sensor_msgs/Image on:
-  so101real/camera/image   (raw BGR, 30hz)
+  so101real/camera/image   (raw BGR, 30 Hz by default)
 
 Usage:
   python hardware/ros/examples/webcam.py
+  python hardware/ros/examples/webcam.py --device /dev/video2
+  python hardware/ros/examples/webcam.py --device /dev/video0 --rate-hz 15 --width 320 --height 240
 """
+
+import argparse
 
 import cv2
 import rclpy
@@ -23,13 +27,19 @@ HEIGHT     = 480
 
 class CameraNode(Node):
 
-    def __init__(self):
+    def __init__(self, device: str, topic: str, rate_hz: float, width: int, height: int):
         super().__init__("camera_node")
 
-        self.cap = cv2.VideoCapture(DEVICE)
+        self._device = device
+        self._topic = topic
+        self._rate_hz = rate_hz
+        self._width = width
+        self._height = height
+
+        self.cap = cv2.VideoCapture(device)
         if not self.cap.isOpened():
-            self.get_logger().error(f"Cannot open camera {DEVICE}")
-            raise RuntimeError(f"Cannot open camera {DEVICE}")
+            self.get_logger().error(f"Cannot open camera {device}")
+            raise RuntimeError(f"Cannot open camera {device}")
 
         # request native resolution; we'll downscale in software
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1920)
@@ -40,10 +50,10 @@ class CameraNode(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self._pub = self.create_publisher(Image, TOPIC, qos)
-        self.create_timer(1.0 / RATE_HZ, self._tick)
+        self._pub = self.create_publisher(Image, topic, qos)
+        self.create_timer(1.0 / rate_hz, self._tick)
         self.get_logger().info(
-            f"Camera node publishing {WIDTH}x{HEIGHT} @ {RATE_HZ}hz -> {TOPIC}"
+            f"Camera node publishing {width}x{height} @ {rate_hz}hz from {device} -> {topic}"
         )
 
     def _tick(self):
@@ -52,18 +62,17 @@ class CameraNode(Node):
             self.get_logger().warn("Failed to grab frame")
             return
 
-        # downscale to 640x480 for storage / training efficiency
-        frame = cv2.resize(frame, (WIDTH, HEIGHT))
+        frame = cv2.resize(frame, (self._width, self._height))
 
         msg              = Image()
         now              = self.get_clock().now().to_msg()
         msg.header.stamp = now
         msg.header.frame_id = "camera"
-        msg.height       = HEIGHT
-        msg.width        = WIDTH
+        msg.height       = self._height
+        msg.width        = self._width
         msg.encoding     = "bgr8"
         msg.is_bigendian = False
-        msg.step         = WIDTH * 3
+        msg.step         = self._width * 3
         msg.data         = frame.tobytes()
         self._pub.publish(msg)
 
@@ -72,16 +81,34 @@ class CameraNode(Node):
         super().destroy_node()
 
 
+def parse_args():
+    p = argparse.ArgumentParser(description="USB camera publisher for the SO101 wrist webcam.")
+    p.add_argument("--device",   default=DEVICE,  help=f"V4L2 device path (default {DEVICE}).")
+    p.add_argument("--topic",    default=TOPIC,   help=f"ROS topic to publish on (default {TOPIC}).")
+    p.add_argument("--rate-hz",  type=float, default=RATE_HZ, help=f"Publish rate in Hz (default {RATE_HZ}).")
+    p.add_argument("--width",    type=int,   default=WIDTH,   help=f"Output frame width  (default {WIDTH}).")
+    p.add_argument("--height",   type=int,   default=HEIGHT,  help=f"Output frame height (default {HEIGHT}).")
+    return p.parse_args()
+
+
 def main():
+    args = parse_args()
     rclpy.init()
-    node = CameraNode()
+    node = CameraNode(
+        device=args.device,
+        topic=args.topic,
+        rate_hz=args.rate_hz,
+        width=args.width,
+        height=args.height,
+    )
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

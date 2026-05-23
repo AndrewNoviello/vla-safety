@@ -57,7 +57,8 @@ dev = [
 
 [project.scripts]
 so101-robot-node = "hardware.ros.scripts.robot_node_launcher:main"
-vla-deploy-ros = "scripts.deploy_ros:main"
+vla-deploy = "scripts.deploy:main"
+vla-launch  = "scripts.launch_menu:main"
 
 [tool.setuptools]
 include-package-data = true

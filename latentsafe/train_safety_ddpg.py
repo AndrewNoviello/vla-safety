@@ -85,6 +85,7 @@ def _load_world_model(
         mlp_dim=cfg.predictor_mlp_dim,
         dropout=cfg.predictor_dropout,
         emb_dropout=cfg.predictor_emb_dropout,
+        include_cls_token=cfg.include_cls_token,
     )
 
     decoder = Decoder(
@@ -235,6 +236,7 @@ def train(
             num_hist=num_hist,
             num_pred=num_pred,
             frameskip=frameskip,
+            include_cls_token=True,
         )
     else:
         window  = num_hist + num_pred
@@ -274,18 +276,13 @@ def train(
 
     wm = _load_world_model(wm_checkpoint, action_dim, proprio_dim, cfg, device)
 
-    if isinstance(dataset, CachedLatentDataset):
-        predictor_dim = dataset.predictor_dim
-    else:
-        from dino_wm.encoder import DinoV2Encoder as _Enc
-        _enc = _Enc(name=encoder_name)
-        predictor_dim = _enc.emb_dim + (action_emb_dim + proprio_emb_dim) * concat_dim
-    logging.info(f"predictor_dim = {predictor_dim}  action_dim = {action_dim}")
+    obs_dim = wm.failure_emb_dim
+    logging.info(f"obs_dim = {obs_dim}  action_dim = {action_dim}")
 
     # --- Gym environment ---
     env = _make_env(
         wm=wm, dataset=dataset, device=device,
-        action_dim=action_dim, predictor_dim=predictor_dim,
+        action_dim=action_dim, predictor_dim=obs_dim,
         num_hist=num_hist, frameskip=frameskip,
         max_episode_steps=max_episode_steps,
         p_unsafe_reset=p_unsafe_reset,
@@ -293,7 +290,7 @@ def train(
 
     # --- DDPG policy ---
     ddpg_cfg = SafetyDDPGConfig(
-        obs_dim=predictor_dim,
+        obs_dim=obs_dim,
         action_dim=action_dim,
         actor_lr=actor_lr,
         critic_lr=critic_lr,

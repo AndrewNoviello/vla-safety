@@ -69,6 +69,7 @@ def _build_and_load(
         mlp_dim=cfg.predictor_mlp_dim,
         dropout=0.0,
         emb_dropout=0.0,
+        include_cls_token=cfg.include_cls_token,
     )
 
     decoder = Decoder(

@@ -122,7 +122,7 @@ class ReplayBuffer:
 
 @dataclass
 class SafetyDDPGConfig:
-    obs_dim:           int   = 404          # predictor_dim (384+10+10 for default config)
+    obs_dim:           int   = 394          # CLS+proprio state dim (384+10 by default)
     action_dim:        int   = 6
     hidden_dim:        int   = 512
     actor_lr:          float = 1e-4

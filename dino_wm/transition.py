@@ -4,6 +4,8 @@ Bundles proprio and action encoders with the transformer predictor.
 Takes latent, proprio, and actions explicitly.
 """
 
+from __future__ import annotations
+
 import torch
 from torch import nn
 from einops import rearrange, repeat
@@ -138,11 +140,15 @@ class TransitionModel(nn.Module):
         dim_head: int = 64,
         dropout: float = 0.0,
         emb_dropout: float = 0.0,
+        include_cls_token: bool = False,
     ):
         super().__init__()
         assert concat_dim in {0, 1}, "concat_dim must be 0 or 1"
 
         self.concat_dim = concat_dim
+        self.include_cls_token = include_cls_token
+        self.num_visual_patches = num_patches
+        self.cls_token_index = 0 if include_cls_token else None
         self.num_proprio_repeat = num_proprio_repeat
         self.num_action_repeat = num_action_repeat
         self.proprio_dim = proprio_emb_dim * num_proprio_repeat
@@ -155,9 +161,13 @@ class TransitionModel(nn.Module):
         predictor_dim = emb_dim + (
             proprio_emb_dim * num_proprio_repeat + action_emb_dim * num_action_repeat
         ) * concat_dim
+        self.predictor_dim = predictor_dim
 
-        # Number of tokens per frame (concat_dim=0 adds proprio and action as extra tokens)
-        num_tokens = num_patches + (2 if concat_dim == 0 else 0)
+        # Number of tokens per frame. With concat_dim=1, proprio/action are
+        # feature slices on every visual token; with concat_dim=0 they are
+        # separate tokens. CLS, when enabled, is a visual-state token.
+        num_tokens = num_patches + (1 if include_cls_token else 0) + (2 if concat_dim == 0 else 0)
+        self.num_tokens = num_tokens
 
         self.pos_embedding = nn.Parameter(
             torch.randn(1, num_frames * num_tokens, predictor_dim)
@@ -179,8 +189,14 @@ class TransitionModel(nn.Module):
         latent: torch.Tensor,
         proprio_emb: torch.Tensor,
         action_emb: torch.Tensor,
+        class_token: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Combine visual latent with proprio and action embeddings."""
+        if self.include_cls_token:
+            if class_token is None:
+                raise ValueError("class_token is required when include_cls_token=True")
+            latent = torch.cat([class_token.unsqueeze(2), latent], dim=2)
+
         if self.concat_dim == 0:
             z = torch.cat(
                 [
@@ -206,10 +222,12 @@ class TransitionModel(nn.Module):
         latent: torch.Tensor,
         proprio: torch.Tensor,
         action: torch.Tensor,
+        class_token: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
             latent: (B, T, num_patches, emb_dim) visual patch embeddings
+            class_token: optional (B, T, emb_dim) visual class-token embedding
             proprio: (B, T, proprio_dim) raw proprioceptive state
             action: (B, T, action_dim) raw actions
 
@@ -219,7 +237,7 @@ class TransitionModel(nn.Module):
         proprio_emb = self.proprio_encoder(proprio)
         action_emb = self.action_encoder(action)
 
-        z = self._combine_inputs(latent, proprio_emb, action_emb)
+        z = self._combine_inputs(latent, proprio_emb, action_emb, class_token)
         return self.forward_z(z)
 
     def forward_z(self, z: torch.Tensor) -> torch.Tensor:
@@ -237,11 +255,12 @@ class TransitionModel(nn.Module):
         latent: torch.Tensor,
         proprio: torch.Tensor,
         action: torch.Tensor,
+        class_token: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Combine latent, proprio, action into z (no transformer). For targets/encoding."""
         proprio_emb = self.proprio_encoder(proprio)
         action_emb = self.action_encoder(action)
-        return self._combine_inputs(latent, proprio_emb, action_emb)
+        return self._combine_inputs(latent, proprio_emb, action_emb, class_token)
 
     def replace_actions_in_z(self, z: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         """Replace the action portion of z with new action embeddings (for rollout)."""

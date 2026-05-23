@@ -92,7 +92,7 @@ class SafetyMonitor(Node):
 
         self.actor = self.critic = None
         if policy_dir is not None:
-            obs_dim    = self.model.emb_dim
+            obs_dim    = self.model.failure_emb_dim
             action_dim = POLICY_FEATURES["action"]["shape"][-1]
             self.actor  = SafetyActor(obs_dim, action_dim).to(self.device).eval()
             self.critic = SafetyCritic(obs_dim, action_dim).to(self.device).eval()
@@ -111,6 +111,15 @@ class SafetyMonitor(Node):
         self.latest_positions: np.ndarray | None = None
         self.latest_commands:  np.ndarray | None = None
         self.latest_frame:     np.ndarray | None = None
+
+        # Under `ros2 launch`, stdout is piped through a per-process line-prefix
+        # wrapper that only flushes on '\n', so the in-place `\r` overwrite
+        # never reaches the terminal. Detect TTY via stdin (emulate_tty=True in
+        # the launch files puts a pseudo-TTY on stdout but never on stdin) and
+        # switch to newline-terminated prints (rate-limited) when launched.
+        self._is_tty = sys.stdin.isatty()
+        self._tick_count = 0
+        self._launch_print_every = 5  # tick rate is 20 Hz → ~4 prints/sec under launch
 
         qos = QoSProfile(
             depth=10,
@@ -143,7 +152,21 @@ class SafetyMonitor(Node):
 
     @torch.no_grad()
     def _tick(self):
+        self._tick_count += 1
         if self.latest_positions is None or self.latest_frame is None:
+            # Surface what we're missing every 1 s (20 ticks) so silence is
+            # informative — common cause is DDS discovery still settling.
+            if self._tick_count % 20 == 0:
+                missing = []
+                if self.latest_positions is None:
+                    missing.append("joint_state")
+                if self.latest_frame is None:
+                    missing.append("camera/image")
+                msg = f"…still waiting for: {', '.join(missing)}"
+                if self._is_tty:
+                    print(f"\r{YELLOW}{msg}{RESET}    ", end="", flush=True)
+                else:
+                    print(msg, flush=True)
             return
 
         img = torch.from_numpy(self.latest_frame).permute(2, 0, 1).float() / 255.0
@@ -166,9 +189,9 @@ class SafetyMonitor(Node):
 
         value = None
         if self.actor is not None:
-            pooled = z[:, -1].mean(dim=1)                # (1, predictor_dim)
-            action_t = self.actor(pooled)                # (1, action_dim)
-            value = self.critic(pooled, action_t).item()
+            state = self.model.class_token_from_z(z[:, -1:], state_only=True)[:, -1]
+            action_t = self.actor(state)                 # (1, action_dim)
+            value = self.critic(state, action_t).item()
 
         if score > 0:
             tag = f"{RED}{BOLD}UNSAFE{RESET}"
@@ -176,11 +199,17 @@ class SafetyMonitor(Node):
             tag = f"{GREEN}{BOLD}SAFE  {RESET}"
         # |score| < 1 = inside training margin; classifier is uncertain.
         margin = "" if abs(score) >= 1.0 else f" {YELLOW}(margin){RESET}"
-        line = f"\r{tag}  {DIM}score={score:+.2f}{RESET}{margin}"
+        v_segment = ""
         if value is not None:
             v_color = GREEN if value > 0 else RED
-            line += f"   {v_color}{BOLD}V={value:+.2f}{RESET}"
-        print(line + "    ", end="", flush=True)
+            v_segment = f"   {v_color}{BOLD}V={value:+.2f}{RESET}"
+
+        if self._is_tty:
+            line = f"\r{tag}  {DIM}score={score:+.2f}{RESET}{margin}{v_segment}"
+            print(line + "    ", end="", flush=True)
+        elif self._tick_count % self._launch_print_every == 0:
+            # Newline-terminated so `ros2 launch`'s prefix wrapper flushes.
+            print(f"{tag}  {DIM}score={score:+.2f}{RESET}{margin}{v_segment}", flush=True)
 
 
 def _keyboard_thread():
@@ -216,8 +245,12 @@ def main():
 
     rclpy.init()
     node = SafetyMonitor(args.checkpoint, args.dataset_root, args.device, args.policy_dir)
-    kb = threading.Thread(target=_keyboard_thread, daemon=True)
-    kb.start()
+    # Skip the 'q'-to-quit keyboard thread when stdin isn't a TTY (e.g. running
+    # under `ros2 launch`, where stdin is piped and termios calls fail). Use
+    # Ctrl-C on the launch process to exit instead.
+    if sys.stdin.isatty():
+        kb = threading.Thread(target=_keyboard_thread, daemon=True)
+        kb.start()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

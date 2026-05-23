@@ -1,0 +1,71 @@
+[INFO] [launch]: All log files can be found below /root/.ros/log/2026-05-11-20-23-54-307868-culbertson-robotics-02.cs.cornell.edu-1536
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [so101_robot_node-1]: process started with pid [1539]
+[INFO] [so101_camera_node-2]: process started with pid [1540]
+[INFO] [so101_leader_teleop-3]: process started with pid [1541]
+[so101_robot_node-1] Configuration: robot:
+[so101_robot_node-1]   _target_: hardware.robots.so101real.SO101Real
+[so101_robot_node-1]   config:
+[so101_robot_node-1]     name: so101real
+[so101_robot_node-1]     dof: 6
+[so101_robot_node-1]     port: /dev/ttyACM1
+[so101_robot_node-1]     calibration: /workspace/vla-safety/calibration/robots/so_follower/
+[so101_robot_node-1]     id: follower_arm
+[so101_robot_node-1]     init_joint_positions:
+[so101_robot_node-1]     - 1.5708
+[so101_robot_node-1]     - -1.5708
+[so101_robot_node-1]     - 1.5708
+[so101_robot_node-1]     - -1.5708
+[so101_robot_node-1]     - -1.5708
+[so101_robot_node-1]     - 0
+[so101_robot_node-1]     joint_limits_lower:
+[so101_robot_node-1]     - -6.2832
+[so101_robot_node-1]     - -6.2832
+[so101_robot_node-1]     - -6.2832
+[so101_robot_node-1]     - -6.2832
+[so101_robot_node-1]     - -6.2832
+[so101_robot_node-1]     - -6.2832
+[so101_robot_node-1]     joint_limits_upper:
+[so101_robot_node-1]     - 6.2832
+[so101_robot_node-1]     - 6.2832
+[so101_robot_node-1]     - 6.2832
+[so101_robot_node-1]     - 6.2832
+[so101_robot_node-1]     - 6.2832
+[so101_robot_node-1]     - 6.2832
+[so101_robot_node-1] ros_node:
+[so101_robot_node-1]   _target_: hardware.ros.robot_node.RobotNodeConfig
+[so101_robot_node-1]   update_rate: 20.0
+[so101_robot_node-1]   joint_state_topic: joint_state
+[so101_robot_node-1]   joint_command_topic: joint_command
+[so101_robot_node-1]   estop_topic: estop
+[so101_robot_node-1]   status_topic: robot_status
+[so101_robot_node-1]   control_mode: joint_pos
+[so101_robot_node-1] 
+[so101_robot_node-1] Creating robot: hardware.robots.so101real.SO101Real
+[so101_camera_node-2] [0m[INFO] [1778531034.663170390] [camera_node]: Camera node publishing 640x480 @ 30.0hz from /dev/video0 -> so101real/camera/image[0m
+[so101_leader_teleop-3] [0m[INFO] [1778531037.666303159] [rowlet_leader]: Leader connected on /dev/ttyACM0[0m
+[so101_robot_node-1] Creating ROS node configuration: hardware.ros.robot_node.RobotNodeConfig
+[so101_robot_node-1] [2026-05-11 20:23:57,837][lerobot.robots.so_follower.so_follower][INFO] - follower_arm SOFollower connected.
+[so101_robot_node-1] [0m[INFO] [1778531037.838921126] [so101real.so101real_node]: Connected to so101real[0m
+[so101_robot_node-1] SO101Follower: Robot already enabled
+[so101_robot_node-1] [0m[INFO] [1778531037.839308849] [so101real.so101real_node]: Robot enabled automatically[0m
+[so101_robot_node-1] SO101Follower: Control mode set to joint_pos
+[so101_robot_node-1] [0m[INFO] [1778531037.839641041] [so101real.so101real_node]: Control mode set to joint_pos[0m
+[so101_robot_node-1] [0m[INFO] [1778531037.840003883] [so101real.so101real_node]: RobotNode so101real_node initialized for so101real[0m
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[so101_robot_node-1] Error: failed to shutdown: rcl_shutdown already called on the given context, at ./src/rcl/init.c:333
+[so101_robot_node-1] Traceback (most recent call last):
+[so101_robot_node-1]   File "/workspace/vla-safety/hardware/ros/scripts/robot_node_launcher.py", line 24, in main
+[so101_robot_node-1]     run_robot_node(robot, ros_config)
+[so101_robot_node-1]   File "/workspace/vla-safety/hardware/ros/robot_node.py", line 369, in run_robot_node
+[so101_robot_node-1]     rclpy.shutdown()
+[so101_robot_node-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/__init__.py", line 134, in shutdown
+[so101_robot_node-1]     _shutdown(context=context)
+[so101_robot_node-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/utilities.py", line 82, in shutdown
+[so101_robot_node-1]     context.shutdown()
+[so101_robot_node-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/context.py", line 129, in shutdown
+[so101_robot_node-1]     self.__context.shutdown()
+[so101_robot_node-1] rclpy._rclpy_pybind11.RCLError: failed to shutdown: rcl_shutdown already called on the given context, at ./src/rcl/init.c:333
+[INFO] [so101_camera_node-2]: process has finished cleanly [pid 1540]
+[INFO] [so101_leader_teleop-3]: process has finished cleanly [pid 1541]
+[ERROR] [so101_robot_node-1]: process has died [pid 1539, exit code 1, cmd 'python -m hardware.ros.scripts.robot_node_launcher robot=so101real robot.config.port=/dev/ttyACM1 robot.config.name=so101real'].

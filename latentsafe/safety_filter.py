@@ -71,6 +71,7 @@ def _build_world_model(
     predictor_mlp_dim: int = 2048,
     predictor_dropout: float = 0.0,
     predictor_emb_dropout: float = 0.0,
+    include_cls_token: bool = True,
     decoder_channel: int = 384,
     decoder_n_res_block: int = 4,
     decoder_n_res_channel: int = 128,
@@ -105,6 +106,7 @@ def _build_world_model(
         mlp_dim=predictor_mlp_dim,
         dropout=predictor_dropout,
         emb_dropout=predictor_emb_dropout,
+        include_cls_token=include_cls_token,
     )
 
     decoder = Decoder(
@@ -208,10 +210,6 @@ class LatentSafetyFilter:
         self.action_dim = action_dim
         self.proprio_dim = proprio_dim
 
-        # Predictor output dimension = encoder_emb_dim + (action+proprio) extras
-        # For dinov2_vits14 with concat_dim=1: 384 + (10+10)*1 = 404
-        self.predictor_dim = 384 + (action_emb_dim + proprio_emb_dim) * concat_dim
-
         # ------------------------------------------------------------------
         # 1. Load dataset stats (for normalizing proprio and actions)
         # ------------------------------------------------------------------
@@ -254,6 +252,7 @@ class LatentSafetyFilter:
         self.wm.eval()
         for p in self.wm.parameters():
             p.requires_grad = False
+        self.predictor_dim = self.wm.failure_emb_dim
         logger.info("World model loaded and frozen.")
 
         # ------------------------------------------------------------------
@@ -326,14 +325,14 @@ class LatentSafetyFilter:
     # ------------------------------------------------------------------
 
     def _pool_z(self, z: torch.Tensor) -> torch.Tensor:
-        """Mean-pool patch features from the last timestep.
+        """Extract CLS+proprio state features from the last timestep.
 
         Args:
-            z: (1, T, num_patches, predictor_dim)
+            z: (1, T, num_tokens, predictor_dim)
         Returns:
-            (1, predictor_dim) — flat observation for the DDPG.
+            (1, failure_emb_dim) — flat observation for the DDPG.
         """
-        return z[:, -1].mean(dim=1)  # (1, P, D) → mean over patches → (1, D)
+        return self.wm.class_token_from_z(z[:, -1:], state_only=True)[:, -1]
 
     @torch.no_grad()
     def _encode_observation(
